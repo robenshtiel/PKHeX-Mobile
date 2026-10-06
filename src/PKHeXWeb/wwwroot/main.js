@@ -22,12 +22,15 @@ const TAB = {
   Main: /^(Species|Nickname|IsNicknamed|IsShiny|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
   Moves: /^(Move[1-4]|RelearnMove[1-4])(_PP|_PPUps)?$/,
   Cosmetic: /^(Contest|Marking|Ribbon|AffixedRibbon|HasBattle|HasContest)/,
-  'OT / Misc': /^(OriginalTrainer|OT_|HandlingTrainer|HT_|TID|SID|Ball|Met|Egg|Version|Language|Geo)/,
+  Met: /^(Ball|Version|Fateful|Met|Egg)/,
+  'OT / Misc': /^(OriginalTrainer|OT_|HandlingTrainer|HT_|TID|SID|Language|Geo)/,
 };
+// Friendly names for the Origin game dropdown. Only games listed here are offered (plus the current value).
+const GAME = { RD: 'Red', GN: 'Green', BU: 'Blue', YW: 'Yellow', GD: 'Gold', SI: 'Silver', C: 'Crystal', R: 'Ruby', S: 'Sapphire', E: 'Emerald', FR: 'FireRed', LG: 'LeafGreen', CXD: 'Colosseum / XD', D: 'Diamond', P: 'Pearl', Pt: 'Platinum', HG: 'HeartGold', SS: 'SoulSilver', B: 'Black', W: 'White', B2: 'Black 2', W2: 'White 2', X: 'X', Y: 'Y', OR: 'Omega Ruby', AS: 'Alpha Sapphire', SN: 'Sun', MN: 'Moon', US: 'Ultra Sun', UM: 'Ultra Moon', GO: 'Pokémon GO', GP: 'Let’s Go, Pikachu!', GE: 'Let’s Go, Eevee!', SW: 'Sword', SH: 'Shield', BD: 'Brilliant Diamond', SP: 'Shining Pearl', PLA: 'Legends: Arceus', SL: 'Scarlet', VL: 'Violet' };
 const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main' };
 let legalDirty = true;
 const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg|Ability|Move[1-4]$)/;
-const ONLY_LEGAL = /^(Move[1-4]|Ability)$/;
+const ONLY_LEGAL = /^(Move[1-4]|RelearnMove[1-4]|Ability)$/;
 const loadOpts = () => {
   const b = call(() => J(E.GetOptions(S.box, S.slot))).opts ?? {};
   if (legalDirty) { const r = call(() => J(E.GetLegalChoices(S.box, S.slot))); S.legal = r.opts ?? {}; if (!r.ok) toast('Legal lists unavailable: ' + r.error); legalDirty = false; }
@@ -93,6 +96,85 @@ function loadEncounters() {
   if (!r.ok) toast(r.error);
 }
 
+const ST = ['HP', 'ATK', 'DEF', 'SPA', 'SPD', 'SPE'];
+const HT_FLAG = /^HT_(HP|ATK|DEF|SPA|SPD|SPE)$/;
+document.head.appendChild(Object.assign(document.createElement('style'), { textContent:
+  '.ht-on input{background:#fde047!important;color:#1a1a1a!important;border-color:#eab308!important}' +
+  '.sc{display:flex;gap:6px;align-items:center}.sc label{flex:1;min-width:0}.sc .mx{flex:none;padding:4px 8px;font-size:12px}' +
+  '#rbm{width:min(620px,94vw);max-height:86vh;padding:0;border:1px solid #8886;border-radius:12px}#rbm::backdrop{background:#0009}' +
+  '#rbm .rbw{display:flex;flex-direction:column;max-height:86vh}#rbm .rbh{padding:12px 16px;border-bottom:1px solid #8884}#rbm .rbh h3{margin:0 0 8px}' +
+  '#rbm .rbl{overflow:auto;padding:8px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:0 14px}' +
+  '#rbm .rbi{display:flex;gap:8px;align-items:center;padding:6px 0;cursor:pointer}#rbm .rbi.bad{color:#dc2626}' +
+  '#rbm .rbf{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 16px;border-top:1px solid #8884}#rbm .rbf .sp{flex:1}' }));
+// Largest value the Max button may set: IV cap, EV cap, or what is left of the 510 EV total.
+const maxFor = (n) => {
+  const p = by(n); if (!p || p.max == null) return null;
+  const cap = +p.max;
+  if (!/^EV_/.test(n) || p.max !== '252') return cap;
+  const others = ST.reduce((a, x) => (`EV_${x}` === n ? a : a + +(by(`EV_${x}`)?.value ?? 0)), 0);
+  return Math.max(0, Math.min(cap, 510 - others));
+};
+
+const isRibbon = (p) => p.type === 'Boolean' && /^Ribbon/.test(p.name);
+
+function setRibbon(n, on) {
+  const r = call(() => J(E.SetProp(S.box, S.slot, n, String(on))));
+  if (!r.ok) { toast(r.error); return false; }
+  const p = by(n); if (p) p.value = on ? 'True' : 'False';
+  return true;
+}
+
+function openRibbons() {
+  let dlg = $('rbm');
+  if (!dlg) {
+    dlg = document.createElement('dialog'); dlg.id = 'rbm'; document.body.appendChild(dlg);
+    dlg.addEventListener('close', () => { if (S.slot >= 0 && S.props.length) refresh(); });
+    dlg.addEventListener('click', (e) => {
+      if (e.target === dlg) return dlg.close();
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.rbclose) return dlg.close();
+      if (b.dataset.rbset) {
+        const on = b.dataset.rbset === '1';
+        dlg.querySelectorAll('.rbi:not([hidden])').forEach((l) => {
+          const c = l.querySelector('input');
+          if ((on && l.dataset.bad) || c.checked === on) return;
+          if (setRibbon(c.dataset.rb, on)) c.checked = on;
+        });
+        count();
+      }
+    });
+    dlg.addEventListener('change', (e) => {
+      const c = e.target; if (!c.dataset.rb) return;
+      if (!setRibbon(c.dataset.rb, c.checked)) c.checked = !c.checked;
+      count();
+    });
+    dlg.addEventListener('input', (e) => {
+      if (e.target.id !== 'rbq') return; const q = e.target.value.toLowerCase();
+      dlg.querySelectorAll('.rbi').forEach((l) => { l.hidden = !l.textContent.toLowerCase().includes(q); });
+    });
+  }
+  const count = () => { const n = dlg.querySelector('#rbn'); if (n) n.textContent = `${dlg.querySelectorAll('.rbi input:checked').length} set`; };
+  const cs = getComputedStyle(document.body);
+  dlg.style.background = cs.backgroundColor === 'rgba(0, 0, 0, 0)' ? 'Canvas' : cs.backgroundColor; dlg.style.color = cs.color;
+  dlg.innerHTML = '<div class="rbw"><div class="rbh"><h3>Ribbons and marks</h3><p class="hint" style="margin:0">Checking which ribbons are legal…</p></div></div>';
+  dlg.showModal();
+  setTimeout(() => {
+    const r = call(() => J(E.GetLegalRibbons(S.box, S.slot)));
+    const legal = new Set(r.legal ?? []), rb = S.props.filter(isRibbon);
+    const shown = r.ok ? rb.filter((p) => legal.has(p.name) || p.value === 'True') : rb;
+    const row = (p) => {
+      const bad = r.ok && !legal.has(p.name);
+      return `<label class="rbi${bad ? ' bad' : ''}"${bad ? ' data-bad="1"' : ''}><input type="checkbox" data-rb="${p.name}"${p.value === 'True' ? ' checked' : ''}>${esc(nice(p.name.replace(/^Ribbon/, '')))}${bad ? ' (not legal)' : ''}</label>`;
+    };
+    dlg.innerHTML = `<div class="rbw"><div class="rbh"><h3>Ribbons and marks <small id="rbn" class="hint"></small></h3>`
+      + (r.ok ? '' : `<p class="bad" style="margin:0 0 8px">Legal filter unavailable (${esc(r.error ?? 'unknown error')}); showing every ribbon.</p>`)
+      + `<input id="rbq" type="search" placeholder="Filter ribbons" style="width:100%"></div>`
+      + `<div class="rbl">${shown.map(row).join('') || '<p class="hint">No ribbons can be legally set on this Pokémon.</p>'}</div>`
+      + `<div class="rbf"><button class="btn" data-rbset="1">Select all legal</button><button class="btn" data-rbset="0">Clear all</button><span class="sp"></span><button class="btn pri" data-rbclose="1">Done</button></div></div>`;
+    count();
+  }, 30);
+}
+
 function view() {
   const P = S.props, m = by('Species'), lvl = by('CurrentLevel')?.value ?? '?';
   const id = +(m?.value ?? 0), name = N.species[id] ?? '';
@@ -101,9 +183,11 @@ function view() {
   let h = '';
   if (S.tab === 'Main') h = `<div class="fg">${list(TAB.Main).map(ctl).join('')}</div>`;
   if (S.tab === 'Stats') {
-    const st = ['HP', 'ATK', 'DEF', 'SPA', 'SPD', 'SPE'], c = (n) => by(n) ? `<td>${ctl(by(n)).replace(/<label[^>]*>[^<]*(?=<input)/, '<label>')}</td>` : '<td></td>';
-    const evTotal = st.reduce((a, x) => a + (+(by('EV_' + x)?.value ?? 0)), 0);
-    h = `<table><tr><th></th><th>IV</th><th>EV</th></tr>${st.map((x) => `<tr><td>${x}</td>${c('IV_' + x)}${c('EV_' + x)}</tr>`).join('')}<tr><td>Total</td><td></td><td>${evTotal}${by('EV_HP')?.max === '252' ? ' / 510' : ''}</td></tr></table>`;
+    const ht = (x) => by('HT_' + x), hasHT = ST.some((x) => ht(x)), evCap = by('EV_HP')?.max === '252';
+    const evTotal = ST.reduce((a, x) => a + (+(by('EV_' + x)?.value ?? 0)), 0);
+    const c = (n, hot) => { const p = by(n); return !p ? '<td></td>' : `<td class="${hot ? 'ht-on' : ''}"><div class="sc">${ctl(p).replace(/<label[^>]*>[^<]*(?=<input)/, '<label>')}<button class="btn mx" type="button" data-max="${n}" aria-label="Max ${esc(nice(n))}">Max</button></div></td>`; };
+    const box = (x) => ht(x) ? `<td><input type="checkbox" data-p="HT_${x}" aria-label="Hyper trained ${x}"${ht(x).value === 'True' ? ' checked' : ''}></td>` : '<td></td>';
+    h = `<table><tr><th></th><th>IV</th><th>EV</th>${hasHT ? '<th>Hyper</th>' : ''}</tr>${ST.map((x) => `<tr><td>${x}</td>${c('IV_' + x, ht(x)?.value === 'True')}${c('EV_' + x)}${hasHT ? box(x) : ''}</tr>`).join('')}<tr><td>Total</td><td></td><td>${evTotal}${evCap ? ' / 510' : ''}</td>${hasHT ? '<td></td>' : ''}</tr></table>`;
   }
   if (S.tab === 'Moves') {
     h = [1, 2, 3, 4].map((i) => { const mv = by('Move' + i); if (!mv) return ''; const u = +(by(`Move${i}_PPUps`)?.value ?? 0);
@@ -111,15 +195,32 @@ function view() {
       + `<h3>Relearn moves</h3><div class="fg">${list(/^RelearnMove/).map(ctl).join('')}</div>`;
   }
   if (S.tab === 'Cosmetic') {
-    const rb = P.filter((p) => p.type === 'Boolean' && /^Ribbon/.test(p.name)), on = rb.filter((p) => p.value === 'True').length;
+    const rb = P.filter(isRibbon), on = rb.filter((p) => p.value === 'True').length;
     const rest = P.filter((p) => TAB.Cosmetic.test(p.name) && !rb.includes(p));
-    h = `<div class="fg">${rest.map(ctl).join('')}</div><h3>Ribbons and marks (${on}/${rb.length})</h3><div class="chips">${rb.map((p) => `<button class="chip${p.value === 'True' ? ' on' : ''}" data-chip="${p.name}">${nice(p.name.replace(/^Ribbon/, ''))}</button>`).join('')}</div>
-<p><button class="btn" data-all="1">Set all</button> <button class="btn" data-all="0">Clear all</button></p>`;
+    h = `<div class="fg">${rest.map(ctl).join('')}</div>` + (rb.length
+      ? `<h3>Ribbons and marks</h3><p class="hint">${on} set</p><p><button class="btn" id="rbopen">Edit ribbons and marks…</button></p>`
+      : '<p class="hint">This Pokémon has no ribbon fields.</p>');
   }
-  if (S.tab === 'OT / Misc') h = `<div class="fg">${list(TAB['OT / Misc']).map(ctl).join('')}</div>`;
+  if (S.tab === 'Met') {
+    const ps = list(TAB.Met);
+    const origin = (p) => {
+      const v = p.value ?? '', ks = p.options.filter((o) => GAME[o]); if (!ks.includes(v)) ks.unshift(v);
+      return `<label class="f">Origin game<select data-p="${p.name}" data-v="${esc(v)}">${ks.map((o) => `<option value="${esc(o)}">${esc(GAME[o] ?? o)}</option>`).join('')}</select></label>`;
+    };
+    const one = (p) => (p.name === 'Version' && p.options ? origin(p) : ctl(p));
+    const rank = (n, ks) => { const i = ks.findIndex((k) => n.includes(k)); return i < 0 ? ks.length : i; };
+    const sec = (t, re, ks) => {
+      const a = ps.filter((p) => re.test(p.name)).sort((x, y) => rank(x.name, ks) - rank(y.name, ks));
+      return a.length ? `${t ? `<h3>${t}</h3>` : ''}<div class="fg">${a.map(one).join('')}</div>` : '';
+    };
+    const WHEN = ['Location', 'Level', 'Year', 'Month', 'Day'];
+    h = sec('', /^(Ball|Version|Fateful)/, ['Ball', 'Version', 'Fateful']) + sec('Met information', /^Met/, WHEN) + sec('Egg information', /^Egg/, WHEN)
+      || '<p class="hint">This Pokémon has no origin fields.</p>';
+  }
+  if (S.tab === 'OT / Misc') h = `<div class="fg">${list(TAB['OT / Misc']).filter((p) => !HT_FLAG.test(p.name)).map(ctl).join('')}</div>`;
   if (S.tab === 'All fields') h = `<label class="f">Search<input id="q" type="search" placeholder="Filter fields"></label><div class="fg all" style="margin-top:10px">${P.map(ctl).join('')}</div>`;
   if (S.tab === 'Legality') { const r = call(() => J(E.Legality(S.box, S.slot))); h = r.ok ? `<p class="${r.valid ? 'ok' : 'bad'}">${r.valid ? 'Legal' : 'Not legal'}</p><pre>${esc(r.report)}</pre>` : `<p class="bad">${esc(r.error)}</p>`; }
-  const tabs = ['Main', 'Stats', 'Moves', 'Cosmetic', 'OT / Misc', 'All fields', 'Legality'];
+  const tabs = ['Main', 'Stats', 'Moves', 'Cosmetic', 'Met', 'OT / Misc', 'All fields', 'Legality'];
   $('ed').innerHTML = `<div class="top"><div class="av">${img(id, shiny)}</div><div><h2>${esc(nick)}${shiny ? ' ✦' : ''}</h2><small>${esc(name)} · Lv ${esc(lvl)}</small></div><button class="btn" id="exp">Export</button><button class="btn cl" id="cl">Close</button></div>
 <div class="tabs" role="tablist">${tabs.map((t) => `<button role="tab" class="${t === S.tab ? 'on' : ''}" data-t="${t}">${t}</button>`).join('')}</div>${h}`;
   $('ed').querySelectorAll('select[data-v]').forEach((s) => { s.value = s.dataset.v; });
@@ -162,12 +263,8 @@ $('ed').addEventListener('click', (e) => {
   else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, 'pokemon.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
-  else if (t.dataset.chip) edit(t.dataset.chip, by(t.dataset.chip).value !== 'True');
-  else if (t.dataset.all) {
-    const on = t.dataset.all === '1';
-    S.props.filter((p) => p.type === 'Boolean' && /^Ribbon/.test(p.name)).forEach((p) => E.SetProp(S.box, S.slot, p.name, String(on)));
-    refresh();
-  }
+  else if (t.dataset.max) { const v = maxFor(t.dataset.max); if (v != null) edit(t.dataset.max, v); }
+  else if (t.id === 'rbopen') openRibbons();
 });
 $('load').onclick = () => $('file').click();
 $('file').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; const b = new Uint8Array(await f.arrayBuffer()); setup(call(() => J(E.LoadSave(b, f.name)))); e.target.value = ''; };
