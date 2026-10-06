@@ -1,41 +1,75 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PKHeX Web</title>
-<style>
-body{font:15px system-ui;margin:16px;max-width:760px}
-pre{background:#8881;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}
-fieldset{border:1px solid #8884;border-radius:10px;margin:0 0 12px}
-legend{font-weight:600}
-button,input,select{font:inherit;padding:8px 10px;margin:3px 0;min-height:40px}
-input[type=number]{width:80px}
-</style>
-</head><body>
-<h1>PKHeX Web: engine test</h1>
-<p id="status">Loading engine…</p>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PKHeX Web</title><style>
+:root{--bg:#eceef5;--pn:#fff;--tx:#191b2c;--mu:#667;--ac:#d6334b;--ac2:#fff;--bd:#d8dbe8;--in:#f1f2f8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12141e;--pn:#1b1e2c;--tx:#eceefa;--mu:#9aa0ba;--ac:#ff5a70;--ac2:#1b0d11;--bd:#2c3044;--in:#242839}}
+:root[data-theme="dark"]{--bg:#12141e;--pn:#1b1e2c;--tx:#eceefa;--mu:#9aa0ba;--ac:#ff5a70;--ac2:#1b0d11;--bd:#2c3044;--in:#242839}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--tx);font:15px/1.4 "Avenir Next","Segoe UI",system-ui,sans-serif;min-height:100%}
+button,input,select{font:inherit;color:inherit}
+header{display:flex;gap:10px;align-items:center;padding:12px 14px;background:var(--pn);border-bottom:1px solid var(--bd);position:sticky;top:env(safe-area-inset-top,0px);z-index:5}
+h1{font-size:17px;margin:0;flex:1;font-weight:700}
+.btn{border:1px solid var(--bd);background:var(--in);border-radius:10px;padding:8px 12px;cursor:pointer}
+.btn.pri{background:var(--ac);color:var(--ac2);border-color:var(--ac);font-weight:600}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+main{display:grid;gap:14px;padding:14px;max-width:1100px;margin:auto}
+@media(min-width:900px){main{grid-template-columns:400px 1fr;align-items:start}}
+.card{background:var(--pn);border:1px solid var(--bd);border-radius:16px;padding:14px}
+.bx{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.bx b{font-size:16px}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.slot{aspect-ratio:1;border-radius:50%;border:2px solid var(--bd);background:var(--in);position:relative;cursor:pointer;padding:0;display:grid;place-items:center;font-weight:700;font-size:13px;color:#fff;overflow:hidden}
+.slot.f{border-color:transparent}
+.slot.f::after{content:"";position:absolute;left:0;right:0;top:calc(50% - 1.5px);height:3px;background:rgba(0,0,0,.28)}
+.slot span{position:relative;z-index:1;text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.slot.sel{outline:3px solid var(--ac);outline-offset:2px}
+.slot sup{position:absolute;right:5px;top:3px;font-size:10px;z-index:1}
+.hint{color:var(--mu);font-size:13px;margin:10px 0 0}
+.ed{position:fixed;left:0;right:0;bottom:0;max-height:88%;overflow:auto;background:var(--pn);border-radius:20px 20px 0 0;border-top:1px solid var(--bd);padding:14px 14px calc(14px + env(safe-area-inset-bottom,0px));transform:translateY(105%);transition:transform .22s;z-index:8;box-shadow:0 -10px 30px rgba(0,0,0,.25)}
+.ed.open{transform:none}
+@media(min-width:900px){.ed{position:static;transform:none;max-height:none;border-radius:16px;border:1px solid var(--bd);box-shadow:none}.cl{display:none}}
+.top{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+.av{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:700;flex:none;text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.top h2{margin:0;font-size:18px}.top small{color:var(--mu)}
+.top>div:nth-child(2){flex:1}
+.tabs{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--bd);margin-bottom:12px}
+.tabs button{background:none;border:0;border-bottom:3px solid transparent;padding:9px 12px;color:var(--mu);cursor:pointer;white-space:nowrap}
+.tabs button.on{color:var(--tx);border-color:var(--ac);font-weight:600}
+.fg{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mu)}
+label.f input,label.f select{background:var(--in);border:1px solid var(--bd);border-radius:10px;padding:9px 10px;color:var(--tx);min-height:40px;width:100%}
+label.f input[type=range]{padding:0;accent-color:var(--ac);min-height:32px}
+.ro{display:flex;justify-content:space-between}.ro output{color:var(--tx);font-weight:600}
+.chk{flex-direction:row!important;align-items:center;gap:8px!important;color:var(--tx)!important;font-size:15px!important}
+.chk input{width:22px!important;height:22px;min-height:0!important;accent-color:var(--ac)}
+table{width:100%;border-collapse:collapse}
+th{font-weight:500;color:var(--mu);font-size:13px;text-align:left;padding:4px}
+td{padding:4px}td input{width:64px;background:var(--in);border:1px solid var(--bd);border-radius:8px;padding:7px;color:var(--tx)}
+.bar{height:8px;border-radius:4px;background:var(--in);min-width:60px;overflow:hidden}.bar i{display:block;height:100%;background:var(--ac)}
+.mv{border:1px solid var(--bd);border-radius:12px;padding:10px;margin-bottom:10px}
+.mv .r{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.seg{display:flex;border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:var(--in);padding:8px 14px;cursor:pointer;min-width:42px}
+.seg button.on{background:var(--ac);color:var(--ac2);font-weight:700}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--bd);background:var(--in);border-radius:999px;padding:6px 11px;font-size:13px;cursor:pointer}
+.chip.on{background:var(--ac);border-color:var(--ac);color:var(--ac2)}
+h3{font-size:14px;margin:16px 0 8px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:12px;z-index:20;max-width:90%;font-size:14px}
 
-<fieldset><legend>Open a save</legend>
-<input type="file" id="file">
-</fieldset>
-
-<fieldset><legend>Or make a new test save</legend>
-<select id="game"></select>
-<input type="text" id="trainer" placeholder="Trainer name" value="Test">
-<button id="new">Create save</button>
-</fieldset>
-
-<fieldset><legend>Pokémon</legend>
-<input type="number" id="species" value="25" min="1" aria-label="Species number"> species #
-<input type="number" id="level" value="50" min="1" max="100" aria-label="Level"> level
-<button id="add">Add to first empty box slot</button><br>
-<label>Import a Pokémon file: <input type="file" id="monfile"></label><br>
-<button id="dlmon">Download first Pokémon as a file</button>
-</fieldset>
-
-<fieldset><legend>Save</legend>
-<button id="dlsave">Download save</button>
-</fieldset>
-
-<pre id="out"></pre>
-<script type="module" src="./main.js"></script>
-</body></html>
+.slot span{position:absolute;bottom:2px;right:6px;font-size:10px;color:var(--tx);text-shadow:none;z-index:2}
+.slot img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;position:relative;z-index:1}
+.av{background:var(--in);text-shadow:none;overflow:hidden}.av img{width:100%;image-rendering:pixelated}
+#boxsel{flex:1;margin:0 8px}.bx{gap:0}select.btn{padding:8px}
+.ok{color:#2a9d5c;font-weight:700}.bad{color:var(--ac);font-weight:700}
+pre{white-space:pre-wrap;background:var(--in);padding:10px;border-radius:10px}
+.top .btn{flex:none}[hidden]{display:none!important}
+</style></head><body>
+<header><h1>PKHeX Web</h1><button class="btn" id="theme">Theme</button><button class="btn" id="dlsave">Download save</button><button class="btn" id="newbtn">New</button><button class="btn pri" id="load">Open save</button><input type="file" id="file" hidden></header>
+<main>
+<section class="card"><div class="bx"><button class="btn" id="pv" aria-label="Previous box">‹</button><select id="boxsel" class="btn" aria-label="Box"></select><button class="btn" id="nx" aria-label="Next box">›</button></div>
+<div class="grid" id="grid"></div><p class="hint" id="hint">Open a save file, or tap New to make a test save.</p>
+<div id="newp" hidden><h3>New test save</h3><div class="fg"><label class="f">Game<select id="game"></select></label><label class="f">Trainer name<input id="trainer" value="Test"></label></div><p><button class="btn pri" id="mk">Create save</button></p></div></section>
+<section class="ed" id="ed" aria-label="Pokémon editor"></section>
+</main><script type="module" src="./main.js"></script></body></html>
