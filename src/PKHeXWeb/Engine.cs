@@ -203,7 +203,14 @@ public static partial class Engine
                      : Convert.ChangeType(value, t, CultureInfo.InvariantCulture);
             p.SetValue(pk, v);
             if (name == "AbilityNumber") Call(pk, "RefreshAbility", (int)Math.Log2(Math.Max(1, Convert.ToInt32(v))));
-            if (name == "Ability") { var idx = AbilitySlots(pk).FindIndex(a => a == Convert.ToInt32(v)); if (idx >= 0) Call(pk, "RefreshAbility", idx); }
+            if (name == "Ability")
+            {
+                var id = Convert.ToInt32(v); var sl = AbilitySlots(pk);
+                var curNum = Convert.ToInt32(Prop(pk, "AbilityNumber") ?? 0);
+                int curIdx = curNum > 0 ? (int)Math.Log2(curNum) : -1;
+                var idx = curIdx >= 0 && curIdx < sl.Count && sl[curIdx] == id ? curIdx : sl.FindIndex(a => a == id);
+                if (idx >= 0) Call(pk, "RefreshAbility", idx);
+            }
             if (System.Text.RegularExpressions.Regex.IsMatch(name, "^Move[1-4]$")) Call(pk, "HealPP");
             pk.RefreshChecksum();
             Store(pk, box, slot);
@@ -419,9 +426,9 @@ public static partial class Engine
         return res;
     }
 
-    // Every move the Pokémon can currently know. PKHeX's helper for this has changed shape between versions,
-    // so find it by name and fill in its arguments.
-    static HashSet<int>? LegalMoves(PKM pk)
+    // Broad candidate list from PKHeX's own helper (every source). Only used to narrow the search;
+    // each candidate is then verified against the real legality check below.
+    static HashSet<int>? SuggestedMoves(PKM pk)
     {
         var la = new LegalityAnalysis(pk);
         foreach (var t in typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsAbstract && t.IsSealed && t.IsPublic))
@@ -454,12 +461,74 @@ public static partial class Engine
         return null;
     }
 
+    // True if this move, placed alone in slot 1 of this exact Pokémon (same encounter data), passes the legality check.
+    static bool MoveSlotValid(PKM pk, int move)
+    {
+        var c = pk.Clone();
+        c.Move1 = (ushort)move; c.Move2 = 0; c.Move3 = 0; c.Move4 = 0;
+        TrySet(c, ["Move1_PPUps"], 0); TrySet(c, ["Move2_PPUps"], 0); TrySet(c, ["Move3_PPUps"], 0); TrySet(c, ["Move4_PPUps"], 0);
+        Call(c, "HealPP");
+        c.RefreshChecksum();
+        var la = new LegalityAnalysis(c);
+        if (Prop(la, "Info") is { } info && Prop(info, "Moves") is System.Collections.IEnumerable mv)
+        {
+            foreach (var m in mv) if (Prop(m, "Valid") is bool ok) return ok;
+        }
+        return !la.Report().Split('\n').Any(l => l.StartsWith("Invalid") && (l.Contains("Move 1") || l.Contains("Move1")));
+    }
+
+    static readonly Dictionary<string, HashSet<int>> MoveCache = new();
+
+    static string MoveKey(PKM pk) => string.Join("|", pk.Species, Prop(pk, "Form"), pk.CurrentLevel,
+        Prop(pk, "Version") ?? Prop(pk, "Game"), Prop(pk, "MetLocation") ?? Prop(pk, "Met_Location"),
+        Prop(pk, "EggLocation") ?? Prop(pk, "Egg_Location"), Prop(pk, "MetLevel") ?? Prop(pk, "Met_Level"), pk.IsEgg);
+
+    // Moves that are legal for THIS Pokémon: its species/form, level, and the encounter it matches.
+    // Cached per (species, form, level, version, met data) because checking is not free in the browser.
+    static HashSet<int>? LegalMoves(PKM pk)
+    {
+        var key = MoveKey(pk);
+        if (MoveCache.TryGetValue(key, out var hit)) return hit;
+
+        var pool = SuggestedMoves(pk);
+        IEnumerable<int> cand;
+        if (pool is not null)
+        {
+            foreach (var n in new[] { "Move1", "Move2", "Move3", "Move4" }) pool.Add(Convert.ToInt32(Prop(pk, n) ?? 0));
+            pool.Remove(0); cand = pool;
+        }
+        else
+        {
+            int max = Prop(Sav!, "MaxMoveID") is { } mm ? Convert.ToInt32(mm) : NameList("Move", "movelist").Length - 1;
+            cand = Enumerable.Range(1, Math.Max(1, max));
+        }
+
+        var set = new HashSet<int>();
+        foreach (var m in cand) { try { if (MoveSlotValid(pk, m)) set.Add(m); } catch { } }
+        if (set.Count == 0) return null;
+        if (MoveCache.Count > 64) MoveCache.Clear();
+        MoveCache[key] = set;
+        return set;
+    }
+
     static bool AbilityOk(PKM pk, int slotIndex)
     {
         var c = pk.Clone();
         Call(c, "RefreshAbility", slotIndex);
-        var report = new LegalityAnalysis(c).Report();
-        return !report.Split('\n').Any(l => l.StartsWith("Invalid") && l.Contains("Ability"));
+        c.RefreshChecksum();
+        var la = new LegalityAnalysis(c);
+        if (Prop(la, "Results") is System.Collections.IEnumerable rs)
+        {
+            bool any = false;
+            foreach (var r in rs)
+            {
+                if (Prop(r, "Identifier")?.ToString() != "Ability") continue;
+                any = true;
+                if (Prop(r, "Valid") is false) return false;
+            }
+            if (any) return true;
+        }
+        return !la.Report().Split('\n').Any(l => l.StartsWith("Invalid") && l.Contains("Ability"));
     }
 
     // Dropdown choices limited to what PKHeX's legality checker accepts for this Pokémon.
@@ -474,22 +543,28 @@ public static partial class Engine
             var d = new Dictionary<string, List<Opt>>();
 
             var abNames = NameList("Ability", "abilitylist");
+            string AN(int id) => abNames.ElementAtOrDefault(id) ?? ("#" + id);
             var slots = AbilitySlots(pk);
-            var abs = new List<Opt>(); var seen = new HashSet<int>();
-            for (int i = 0; i < slots.Count; i++)
-            {
-                var id = slots[i];
-                if (id <= 0 || !seen.Add(id) || !AbilityOk(pk, i)) continue;
-                var nm = abNames.ElementAtOrDefault(id) ?? ("#" + id);
-                abs.Add(new Opt(id, i == 2 && slots.Count == 3 ? nm + " (Hidden)" : nm));
-            }
-            if (abs.Count > 0)
+            var legalSlots = new List<int>();
+            for (int i = 0; i < slots.Count; i++) if (slots[i] > 0 && AbilityOk(pk, i)) legalSlots.Add(i);
+            if (legalSlots.Count > 0)
             {
                 if (pk.GetType().GetProperty("Ability") is not null)
                 {
+                    var abs = new List<Opt>(); var seen = new HashSet<int>();
+                    foreach (var i in legalSlots)
+                        if (seen.Add(slots[i])) abs.Add(new Opt(slots[i], i == 2 ? AN(slots[i]) + " (Hidden)" : AN(slots[i])));
                     var cur = Convert.ToInt32(Prop(pk, "Ability") ?? 0);
-                    if (!abs.Any(o => o.v == cur)) abs.Add(new Opt(cur, (abNames.ElementAtOrDefault(cur) ?? ("#" + cur)) + " (not legal)"));
+                    if (!abs.Any(o => o.v == cur)) abs.Add(new Opt(cur, AN(cur) + " (not legal)"));
                     d["Ability"] = abs;
+                }
+                if (pk.GetType().GetProperty("AbilityNumber") is not null)
+                {
+                    string[] ord = ["First ability", "Second ability", "Hidden ability"];
+                    var nums = legalSlots.Select(i => new Opt(1 << i, ord[Math.Min(i, 2)] + " - " + AN(slots[i]))).ToList();
+                    var curN = Convert.ToInt32(Prop(pk, "AbilityNumber") ?? 0);
+                    if (!nums.Any(o => o.v == curN)) nums.Add(new Opt(curN, "Slot " + curN + " (not legal)"));
+                    d["AbilityNumber"] = nums;
                 }
             }
 
