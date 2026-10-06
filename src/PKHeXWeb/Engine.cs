@@ -79,6 +79,43 @@ public static partial class Engine
         return null;
     }
 
+    // PKHeX moved/renamed these APIs between versions, so look them up at runtime.
+    static SaveFile MakeBlank(GameVersion v, string name)
+    {
+        foreach (var typeName in new[] { "PKHeX.Core.BlankSaveFile", "PKHeX.Core.SaveUtil" })
+        {
+            var t = typeof(SaveFile).Assembly.GetType(typeName);
+            if (t is null) continue;
+            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (m.Name is not ("Get" or "GetBlankSAV")) continue;
+                var ps = m.GetParameters();
+                if (ps.Length < 2 || ps[0].ParameterType != typeof(GameVersion) || ps[1].ParameterType != typeof(string)) continue;
+                if (!typeof(SaveFile).IsAssignableFrom(m.ReturnType)) continue;
+                var args = new object?[ps.Length];
+                args[0] = v; args[1] = name;
+                for (int i = 2; i < ps.Length; i++)
+                    args[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue
+                            : ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null;
+                if (m.Invoke(null, args) is SaveFile sf) return sf;
+            }
+        }
+        throw new InvalidOperationException("Could not find PKHeX's blank-save method.");
+    }
+
+    static byte[] PkmBytes(PKM pk)
+    {
+        foreach (var n in new[] { "DecryptedPartyData", "DecryptedBoxData", "Data" })
+        {
+            var ty = pk.GetType();
+            var v = ty.GetProperty(n)?.GetValue(pk) ?? ty.GetField(n)?.GetValue(pk);
+            if (v is byte[] b) return (byte[])b.Clone();
+            if (v is Memory<byte> m) return m.ToArray();
+            if (v is ReadOnlyMemory<byte> rm) return rm.ToArray();
+        }
+        throw new InvalidOperationException("Could not read this Pokémon's raw data.");
+    }
+
     // ---------- saves ----------
 
     [JSExport]
@@ -110,7 +147,7 @@ public static partial class Engine
         try
         {
             if (!Enum.TryParse<GameVersion>(game, out var v)) return Err("Unknown game: " + game);
-            Sav = SaveUtil.GetBlankSAV(v, string.IsNullOrWhiteSpace(trainer) ? "PKHeX" : trainer);
+            Sav = MakeBlank(v, string.IsNullOrWhiteSpace(trainer) ? "PKHeX" : trainer);
             return Info();
         }
         catch (Exception e) { return Err(e.Message); }
@@ -217,7 +254,7 @@ public static partial class Engine
     public static byte[] ExportPokemon(int box, int slot)
     {
         var pk = Slot(box, slot);
-        return pk is null ? [] : pk.DecryptedPartyData;
+        return pk is null ? [] : PkmBytes(pk);
     }
 
     [JSExport]
