@@ -50,12 +50,65 @@ public static partial class Engine
           .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0 && Simple(p.PropertyType))
           .OrderBy(p => p.Name);
 
+    // Type.GetProperty throws AmbiguousMatchException when a derived type re-declares a member with "new"
+    // (e.g. PK9.PersonalInfo hides the base PersonalInfo). In that case use the most derived declaration.
+    static PropertyInfo? FindProp(Type t, string name)
+    {
+        try { return t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance); }
+        catch (AmbiguousMatchException)
+        {
+            static int Depth(Type? x) { int d = 0; for (; x?.BaseType is not null; x = x.BaseType) d++; return d; }
+            return t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.Name == name && p.GetIndexParameters().Length == 0)
+                .OrderByDescending(p => Depth(p.DeclaringType)).FirstOrDefault();
+        }
+    }
+
+    // ---------- value limits ----------
+    // Per-field limits. Anything not listed falls back to the range of its storage type.
+    static int Lim(PKM pk, string prop, int fallback) => Prop(pk, prop) is { } v ? Convert.ToInt32(v) : fallback;
+
+    static (string Min, string Max)? Range(PKM pk, PropertyInfo p)
+    {
+        var n = p.Name;
+        if (p.PropertyType.IsEnum) return null;
+        if (n.StartsWith("EV_")) return ("0", Lim(pk, "MaxEV", 252).ToString());   // 252 per stat (Gen 1-2 use 65535)
+        if (n.StartsWith("IV_")) return ("0", Lim(pk, "MaxIV", 31).ToString());    // 31 (Gen 1-2 use 15)
+        if (System.Text.RegularExpressions.Regex.IsMatch(n, "^Move[1-4]_PP$")) return ("0", "64"); // 40 base PP x 1.6 with 3 PP Ups
+        if (System.Text.RegularExpressions.Regex.IsMatch(n, "^Move[1-4]_PPUps$")) return ("0", "3");
+        switch (n)
+        {
+            case "CurrentLevel": case "Stat_Level": return ("1", "100");
+            case "Met_Level": return ("0", "100");
+            case "EXP": return ("0", "1640000");                                   // level 100, Fluctuating growth
+            case "HeightScalar": case "WeightScalar": case "Scale": return ("0", "255");
+            case "Gender": return ("0", "2");
+            case "TrainerTID7": return ("0", "999999");                            // 6-digit display TID
+            case "TrainerSID7": return ("0", "4294");                              // 4-digit display SID
+        }
+        return Type.GetTypeCode(p.PropertyType) switch
+        {
+            TypeCode.Byte => ("0", "255"),
+            TypeCode.SByte => ("-128", "127"),
+            TypeCode.UInt16 => ("0", "65535"),
+            TypeCode.Int16 => ("-32768", "32767"),
+            TypeCode.UInt32 => ("0", "4294967295"),
+            TypeCode.Int32 => ("-2147483648", "2147483647"),
+            TypeCode.UInt64 => ("0", "18446744073709551615"),
+            TypeCode.Int64 => ("-9223372036854775808", "9223372036854775807"),
+            _ => null,
+        };
+    }
+
+    const int MaxEvTotal = 510;
+    static readonly string[] EvStats = ["HP", "ATK", "DEF", "SPA", "SPD", "SPE"];
+
     // Property names change between PKHeX versions, so these helpers try several names.
     static bool TrySet(object target, string[] names, object value)
     {
         foreach (var n in names)
         {
-            var p = target.GetType().GetProperty(n, BindingFlags.Public | BindingFlags.Instance);
+            var p = FindProp(target.GetType(), n);
             if (p is null || !p.CanWrite) continue;
             try
             {
@@ -73,7 +126,7 @@ public static partial class Engine
     {
         foreach (var n in names)
         {
-            var p = source.GetType().GetProperty(n, BindingFlags.Public | BindingFlags.Instance);
+            var p = FindProp(source.GetType(), n);
             if (p is not null && p.CanRead) return p.GetValue(source);
         }
         return null;
@@ -176,9 +229,10 @@ public static partial class Engine
         var pk = Slot(box, slot);
         if (pk is null) return Err("No Pokémon in that slot.");
         var list = Editable(pk).Select(p =>
-            new { name = p.Name, type = p.PropertyType.Name, value = p.GetValue(pk)?.ToString(), options = p.PropertyType.IsEnum ? Enum.GetNames(p.PropertyType) : null }).ToList();
+            new { name = p.Name, type = p.PropertyType.Name, value = p.GetValue(pk)?.ToString(), options = p.PropertyType.IsEnum ? Enum.GetNames(p.PropertyType) : null,
+                  min = Range(pk, p)?.Min, max = Range(pk, p)?.Max }).ToList();
         // IsShiny has no setter in PKHeX (it's derived from PID/TID/SID), so it is exposed as a synthetic field.
-        list.Add(new { name = "IsShiny", type = "Boolean", value = (string?)pk.IsShiny.ToString(), options = (string[]?)null });
+        list.Add(new { name = "IsShiny", type = "Boolean", value = (string?)pk.IsShiny.ToString(), options = (string[]?)null, min = (string?)null, max = (string?)null });
         return J(new { ok = true, props = list });
     }
 
@@ -198,6 +252,18 @@ public static partial class Engine
             var p = pk is null ? null : Editable(pk).FirstOrDefault(x => x.Name == name);
             if (pk is null || p is null || Sav is null) return Err("Unknown property.");
             var t = p.PropertyType;
+            if (Range(pk, p) is { } r && !t.IsEnum && t != typeof(bool))
+            {
+                if (!decimal.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+                    return Err($"{Nice(name)} must be a whole number.");
+                if (num < decimal.Parse(r.Min, CultureInfo.InvariantCulture) || num > decimal.Parse(r.Max, CultureInfo.InvariantCulture))
+                    return Err($"{Nice(name)} must be between {r.Min} and {r.Max}.");
+                if (name.StartsWith("EV_") && Lim(pk, "MaxEV", 252) <= 255)
+                {
+                    var total = EvStats.Sum(x => "EV_" + x == name ? (int)num : Convert.ToInt32(Prop(pk, "EV_" + x) ?? 0));
+                    if (total > MaxEvTotal) return Err($"EVs can't total more than {MaxEvTotal} (that would be {total}).");
+                }
+            }
             object v = t.IsEnum ? Enum.Parse(t, value)
                      : t == typeof(bool) ? bool.Parse(value)
                      : Convert.ChangeType(value, t, CultureInfo.InvariantCulture);
@@ -235,7 +301,7 @@ public static partial class Engine
         var s = GameInfo.Strings; var ty = s.GetType();
         foreach (var c in candidates)
         {
-            var v = ty.GetProperty(c)?.GetValue(s) ?? ty.GetField(c)?.GetValue(s);
+            var v = FindProp(ty, c)?.GetValue(s) ?? ty.GetField(c)?.GetValue(s);
             if (v is System.Collections.IEnumerable e && v is not string)
                 return e.Cast<object>().Select(x => x?.ToString() ?? "").ToArray();
         }
@@ -387,7 +453,7 @@ public static partial class Engine
                 if (l is null || l.Count == 0) return;
                 foreach (var n in names)
                 {
-                    var pi = pk.GetType().GetProperty(n);
+                    var pi = FindProp(pk.GetType(), n);
                     if (pi is null || pi.PropertyType.IsEnum || pi.PropertyType == typeof(bool)) continue;
                     d[n] = l;
                 }
@@ -549,7 +615,7 @@ public static partial class Engine
             for (int i = 0; i < slots.Count; i++) if (slots[i] > 0 && AbilityOk(pk, i)) legalSlots.Add(i);
             if (legalSlots.Count > 0)
             {
-                if (pk.GetType().GetProperty("Ability") is not null)
+                if (FindProp(pk.GetType(), "Ability") is not null)
                 {
                     var abs = new List<Opt>(); var seen = new HashSet<int>();
                     foreach (var i in legalSlots)
@@ -558,7 +624,7 @@ public static partial class Engine
                     if (!abs.Any(o => o.v == cur)) abs.Add(new Opt(cur, AN(cur) + " (not legal)"));
                     d["Ability"] = abs;
                 }
-                if (pk.GetType().GetProperty("AbilityNumber") is not null)
+                if (FindProp(pk.GetType(), "AbilityNumber") is not null)
                 {
                     string[] ord = ["First ability", "Second ability", "Hidden ability"];
                     var nums = legalSlots.Select(i => new Opt(1 << i, ord[Math.Min(i, 2)] + " - " + AN(slots[i]))).ToList();
@@ -574,7 +640,7 @@ public static partial class Engine
                 var mvNames = NameList("Move", "movelist");
                 foreach (var n in new[] { "Move1", "Move2", "Move3", "Move4" })
                 {
-                    if (pk.GetType().GetProperty(n) is null) continue;
+                    if (FindProp(pk.GetType(), n) is null) continue;
                     var cur = Convert.ToInt32(Prop(pk, n) ?? 0);
                     var l = legal.Select(m => new Opt(m, mvNames.ElementAtOrDefault(m) ?? ("#" + m))).OrderBy(o => o.t, StringComparer.Ordinal).ToList();
                     if (cur != 0 && !legal.Contains(cur)) l.Insert(0, new Opt(cur, (mvNames.ElementAtOrDefault(cur) ?? ("#" + cur)) + " (not legal)"));
@@ -645,7 +711,7 @@ public static partial class Engine
         return null;
     }
 
-    static object? Prop(object o, string name) => o.GetType().GetProperty(name)?.GetValue(o);
+    static object? Prop(object o, string name) => FindProp(o.GetType(), name)?.GetValue(o);
 
     static string EncName(IEncounterable e) => (Prop(e, "LongName") ?? Prop(e, "Name") ?? e.GetType().Name).ToString()!;
 
