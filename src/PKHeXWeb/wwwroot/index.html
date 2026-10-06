@@ -2,11 +2,40 @@
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PKHeX Web</title>
-<style>body{font:15px system-ui;margin:16px;max-width:760px}pre{background:#8881;padding:12px;border-radius:8px;overflow:auto}</style>
+<style>
+body{font:15px system-ui;margin:16px;max-width:760px}
+pre{background:#8881;padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}
+fieldset{border:1px solid #8884;border-radius:10px;margin:0 0 12px}
+legend{font-weight:600}
+button,input,select{font:inherit;padding:8px 10px;margin:3px 0;min-height:40px}
+input[type=number]{width:80px}
+</style>
 </head><body>
 <h1>PKHeX Web: engine test</h1>
 <p id="status">Loading engine…</p>
+
+<fieldset><legend>Open a save</legend>
 <input type="file" id="file">
+</fieldset>
+
+<fieldset><legend>Or make a new test save</legend>
+<select id="game"></select>
+<input type="text" id="trainer" placeholder="Trainer name" value="Test">
+<button id="new">Create save</button>
+</fieldset>
+
+<fieldset><legend>Pokémon</legend>
+<input type="number" id="species" value="25" min="1" aria-label="Species number"> species #
+<input type="number" id="level" value="50" min="1" max="100" aria-label="Level"> level
+<button id="add">Add to first empty box slot</button><br>
+<label>Import a Pokémon file: <input type="file" id="monfile"></label><br>
+<button id="dlmon">Download first Pokémon as a file</button>
+</fieldset>
+
+<fieldset><legend>Save</legend>
+<button id="dlsave">Download save</button>
+</fieldset>
+
 <pre id="out"></pre>
 <script type="module" src="./main.js"></script>
 </body></html>
