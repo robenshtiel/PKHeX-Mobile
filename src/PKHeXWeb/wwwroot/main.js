@@ -292,6 +292,7 @@ function view() {
     h = [1, 2, 3, 4].map((i) => { const mv = by('Move' + i); if (!mv) return ''; const u = +(by(`Move${i}_PPUps`)?.value ?? 0);
       return `<div class="mv">${ctl(mv)}<div class="r">${by(`Move${i}_PP`) ? ctl(by(`Move${i}_PP`)) : ''}<div class="seg" role="group" aria-label="PP Ups">${[0, 1, 2, 3].map((x) => `<button data-up="Move${i}_PPUps" data-x="${x}" class="${u === x ? 'on' : ''}">${x}</button>`).join('')}</div></div></div>`; }).join('')
       + (E.PlusSupported(S.box, S.slot) ? `<h3>Plus / mastery flags</h3><p><button class="btn" type="button" data-plus="0">Set for current moves</button> <button class="btn" type="button" data-plus="1">Set all possible</button></p>` : '')
+      + `<p><button class="btn" type="button" id="mvdbg">Debug move check</button></p>` + (S.dbg ? `<pre>${esc(S.dbg)}</pre>` : '')
       + (list(/^RelearnMove/).length ? `<label class="f chk" style="margin-top:14px"><input type="checkbox" id="arl" ${AUTO_RL ? 'checked' : ''}> Relearn all suggested moves</label>` : '')
       + `<h3>Relearn moves</h3><div class="fg">${list(/^RelearnMove/).map(ctl).join('')}</div>`;
   }
@@ -396,6 +397,7 @@ $('ed').addEventListener('click', (e) => {
   else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked, !!$('nal')?.checked))); r.ok ? pick(S.slot) : toast(r.error); }
   else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, exportName() + '.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
+  else if (t.id === 'mvdbg') { const r = call(() => J(E.MoveDebug(S.box, S.slot, 84))); S.dbg = r.ok ? r.text : r.error; view(); }
   else if (t.dataset.plus) { const r = call(() => J(E.ApplyPlus(S.box, S.slot, t.dataset.plus === '1'))); r.ok ? (legalDirty = true, refresh()) : toast(r.error); }
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
   else if (t.dataset.max) { const v = maxFor(t.dataset.max); if (v != null) edit(t.dataset.max, v); }
