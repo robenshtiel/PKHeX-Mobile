@@ -42,7 +42,7 @@ function ctl(p) {
   if (p.type === 'Boolean') return `<label class="f chk"><input type="checkbox" data-p="${p.name}"${v === 'True' ? ' checked' : ''}>${lbl}</label>`;
   if (p.options) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${p.options.map((o) => `<option>${esc(o)}</option>`).join('')}</select></label>`;
   if (k) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${listOpts(k)}</select></label>`;
-  return `<label class="f">${lbl}<input data-p="${p.name}" type="${NUM.test(p.type) ? 'number' : 'text'}" value="${esc(v)}"></label>`;
+  return `<label class="f">${lbl}<input data-p="${p.name}" type="${NUM.test(p.type) ? 'number' : 'text'}"${NUM.test(p.type) && p.min != null ? ` min="${p.min}" max="${p.max}" step="1"` : ''} value="${esc(v)}"></label>`;
 }
 
 function loadGrid() {
@@ -102,7 +102,8 @@ function view() {
   if (S.tab === 'Main') h = `<div class="fg">${list(TAB.Main).map(ctl).join('')}</div>`;
   if (S.tab === 'Stats') {
     const st = ['HP', 'ATK', 'DEF', 'SPA', 'SPD', 'SPE'], c = (n) => by(n) ? `<td>${ctl(by(n)).replace(/<label[^>]*>[^<]*(?=<input)/, '<label>')}</td>` : '<td></td>';
-    h = `<table><tr><th></th><th>IV</th><th>EV</th></tr>${st.map((x) => `<tr><td>${x}</td>${c('IV_' + x)}${c('EV_' + x)}</tr>`).join('')}</table>`;
+    const evTotal = st.reduce((a, x) => a + (+(by('EV_' + x)?.value ?? 0)), 0);
+    h = `<table><tr><th></th><th>IV</th><th>EV</th></tr>${st.map((x) => `<tr><td>${x}</td>${c('IV_' + x)}${c('EV_' + x)}</tr>`).join('')}<tr><td>Total</td><td></td><td>${evTotal}${by('EV_HP')?.max === '252' ? ' / 510' : ''}</td></tr></table>`;
   }
   if (S.tab === 'Moves') {
     h = [1, 2, 3, 4].map((i) => { const mv = by('Move' + i); if (!mv) return ''; const u = +(by(`Move${i}_PPUps`)?.value ?? 0);
