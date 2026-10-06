@@ -18,7 +18,7 @@ jobs:
           git -C external/PKHeX checkout "$PKHEX_REF"
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: 10.0.x }
-      - run: dotnet publish src/PkhexWeb -c Release -o out
+      - run: dotnet publish src/PKHeXWeb -c Release -o out
       - run: touch out/wwwroot/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with: { path: out/wwwroot }
