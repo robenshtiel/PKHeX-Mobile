@@ -337,10 +337,23 @@ public static partial class Engine
         catch (Exception e) { return Err(e.Message); }
     }
 
+    // Names depend on the language, and a blank test save can report an invalid one. Eggs that become another
+    // species are treated as hatched. Only un-nicknamed Pokémon are touched, so event nicknames are kept.
+    static void FixNames(PKM c, bool speciesChanged)
+    {
+        if (c.Language < 1 || c.Language > 12) TrySet(c, ["Language"], 2);
+        if (speciesChanged && c.IsEgg) c.IsEgg = false;
+        if (!speciesChanged && c.IsNicknamed) return;
+        Call(c, "ClearNickname");
+        var name = GameInfo.Strings.Species.ElementAtOrDefault(c.Species);
+        if (name is not null && c.Language == 2 && c.Nickname != name) { c.IsNicknamed = false; c.Nickname = name; }
+    }
+
     // Builds a Pokémon from one encounter, adjusts it to the wanted species/level, and returns it only if it passes the legality check.
     static (PKM? pk, string report) Build(IEncounterable enc, int species, int level)
     {
         if (enc is not IEncounterConvertible conv) return (null, "Encounter can't be converted.");
+        if (Sav!.Language < 1 || Sav.Language > 12) TrySet(Sav, ["Language"], 2);
         PKM pk;
         try { pk = conv.ConvertToPKM(Sav!, EncounterCriteria.Unrestricted); }
         catch (Exception e) { return (null, e.Message); }
@@ -353,12 +366,13 @@ public static partial class Engine
         foreach (var lv in tries)
         {
             var c = pk.Clone();
-            if (c.Species != species)
+            var changed = c.Species != species;
+            if (changed)
             {
                 c.Species = (ushort)species;
                 Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
-                Call(c, "ClearNickname");
             }
+            FixNames(c, changed);
             if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
             c.RefreshChecksum();
             var la = new LegalityAnalysis(c);
