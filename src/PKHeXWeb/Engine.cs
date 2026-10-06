@@ -41,7 +41,7 @@ public static partial class Engine
     {
         if (pk.Species == 0) return new { slot, empty = true };
         var name = GameInfo.Strings.Species.ElementAtOrDefault(pk.Species) ?? ("#" + pk.Species);
-        return new { slot, empty = false, species = name, nick = pk.Nickname, level = pk.CurrentLevel, shiny = pk.IsShiny };
+        return new { slot, empty = false, id = (int)pk.Species, species = name, nick = pk.Nickname, level = pk.CurrentLevel, shiny = pk.IsShiny };
     }
 
     static bool Simple(Type t) => t.IsPrimitive || t.IsEnum || t == typeof(string);
@@ -186,7 +186,7 @@ public static partial class Engine
         var pk = Slot(box, slot);
         if (pk is null) return Err("No Pokémon in that slot.");
         return J(new { ok = true, props = Editable(pk).Select(p =>
-            new { name = p.Name, type = p.PropertyType.Name, value = p.GetValue(pk)?.ToString() }) });
+            new { name = p.Name, type = p.PropertyType.Name, value = p.GetValue(pk)?.ToString(), options = p.PropertyType.IsEnum ? Enum.GetNames(p.PropertyType) : null }) });
     }
 
     [JSExport]
@@ -216,6 +216,43 @@ public static partial class Engine
         if (pk is null) return Err("No Pokémon in that slot.");
         var la = new LegalityAnalysis(pk);
         return J(new { ok = true, valid = la.Valid, report = la.Report() });
+    }
+
+    // ---------- names and helpers for the UI ----------
+
+    static string[] NameList(params string[] candidates)
+    {
+        var s = GameInfo.Strings; var ty = s.GetType();
+        foreach (var c in candidates)
+        {
+            var v = ty.GetProperty(c)?.GetValue(s) ?? ty.GetField(c)?.GetValue(s);
+            if (v is System.Collections.IEnumerable e && v is not string)
+                return e.Cast<object>().Select(x => x?.ToString() ?? "").ToArray();
+        }
+        return [];
+    }
+
+    [JSExport]
+    public static string GetNames() => J(new
+    {
+        species = NameList("Species", "specieslist"), moves = NameList("Move", "movelist"),
+        items = NameList("Item", "itemlist"), abilities = NameList("Ability", "abilitylist"),
+        natures = NameList("Natures", "natures"),
+    });
+
+    [JSExport]
+    public static string HealPP(int box, int slot)
+    {
+        try
+        {
+            var pk = Slot(box, slot);
+            if (pk is null || Sav is null) return Err("No Pokémon in that slot.");
+            pk.GetType().GetMethod("HealPP", Type.EmptyTypes)?.Invoke(pk, null);
+            pk.RefreshChecksum();
+            Store(pk, box, slot);
+            return J(new { ok = true });
+        }
+        catch (Exception e) { return Err(e.Message); }
     }
 
     // ---------- creating and moving Pokémon (boxes only for now) ----------
