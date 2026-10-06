@@ -19,16 +19,24 @@ const listOpts = (k) => (optCache[k] ??= N[k].map((n, i) => `<option value="${i}
 const LISTS = [[/^Species$/, 'species'], [/^(Move[1-4]|RelearnMove[1-4])$/, 'moves'], [/^(HeldItem|Item)$/, 'items'], [/^Ability$/, 'abilities'], [/^(Nature|StatNature)$/, 'natures']];
 const NUM = /^(Byte|SByte|U?Int(16|32|64))$/;
 const TAB = {
-  Main: /^(Species|Nickname|IsNicknamed|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
+  Main: /^(Species|Nickname|IsNicknamed|IsShiny|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
   Moves: /^(Move[1-4]|RelearnMove[1-4])(_PP|_PPUps)?$/,
   Cosmetic: /^(Contest|Marking|Ribbon|AffixedRibbon|HasBattle|HasContest)/,
   'OT / Misc': /^(OriginalTrainer|OT_|HandlingTrainer|HT_|TID|SID|Ball|Met|Egg|Version|Language|Geo)/,
 };
-const S = { info: null, box: 0, slot: -1, slots: [], props: [], tab: 'Main' };
+const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main' };
+let legalDirty = true;
+const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg)/;
+const loadOpts = () => {
+  const b = call(() => J(E.GetOptions(S.box, S.slot))).opts ?? {};
+  if (legalDirty) { S.legal = call(() => J(E.GetLegalChoices(S.box, S.slot))).opts ?? {}; legalDirty = false; }
+  S.opts = { ...b, ...S.legal };
+};
 const by = (n) => S.props.find((p) => p.name === n);
 
 function ctl(p) {
-  const v = p.value ?? '', lbl = nice(p.name), k = LISTS.find(([r]) => r.test(p.name))?.[1];
+  const v = p.value ?? '', lbl = nice(p.name), k = LISTS.find(([r]) => r.test(p.name))?.[1], o = S.opts[p.name];
+  if (o) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${o.some((x) => String(x.v) === v) ? '' : `<option value="${esc(v)}">${esc(v)} (unknown)</option>`}${o.map((x) => `<option value="${x.v}">${esc(x.t)}</option>`).join('')}</select></label>`;
   if (p.type === 'Boolean') return `<label class="f chk"><input type="checkbox" data-p="${p.name}"${v === 'True' ? ' checked' : ''}>${lbl}</label>`;
   if (p.options) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${p.options.map((o) => `<option>${esc(o)}</option>`).join('')}</select></label>`;
   if (k) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${listOpts(k)}</select></label>`;
@@ -58,7 +66,7 @@ function empty() { $('ed').classList.remove('open'); $('ed').innerHTML = '<p cla
 function pick(i) {
   S.slot = i; const s = S.slots[i]; loadGrid();
   if (s.empty) return showEmpty();
-  S.props = call(() => J(E.GetProps(S.box, i))).props ?? []; S.tab = 'Main'; view();
+  S.props = call(() => J(E.GetProps(S.box, i))).props ?? []; legalDirty = true; loadOpts(); S.tab = 'Main'; view();
 }
 
 function showEmpty() {
@@ -66,7 +74,7 @@ function showEmpty() {
   ed.innerHTML = S.box < 0
     ? '<div class="top"><div><h2>Empty party slot</h2><small>Adding to the party isn’t supported yet. Use a box.</small></div><button class="btn cl" id="cl">Close</button></div>'
     : `<div class="top"><div><h2>Empty slot</h2><small>Box ${S.box + 1}, slot ${S.slot + 1}</small></div><button class="btn cl" id="cl">Close</button></div>
-<div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label></div>
+<div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label><label class="f chk"><input type="checkbox" id="nsh">Shiny</label></div>
 <p><button class="btn pri" id="create">Create Pokémon</button></p>
 <label class="f">Or import a Pokémon file<input type="file" id="impf"></label>`;
   if ($('nsp')) { $('nsp').value = 25; loadEncounters(); }
@@ -115,8 +123,9 @@ function view() {
   $('ed').classList.add('open');
 }
 
-function refresh() { S.props = call(() => J(E.GetProps(S.box, S.slot))).props ?? S.props; loadGrid(); view(); }
+function refresh() { S.props = call(() => J(E.GetProps(S.box, S.slot))).props ?? S.props; loadOpts(); loadGrid(); view(); }
 function edit(n, v) {
+  if (LEGAL_DEP.test(n)) legalDirty = true;
   const r = call(() => J(E.SetProp(S.box, S.slot, n, String(v))));
   if (!r.ok) toast(r.error);
   if (r.ok && /_PPUps$/.test(n)) E.HealPP(S.box, S.slot);
@@ -146,7 +155,7 @@ $('ed').addEventListener('change', async (e) => {
 $('ed').addEventListener('click', (e) => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.id === 'cl') $('ed').classList.remove('open');
-  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value))); r.ok ? pick(S.slot) : toast(r.error); }
+  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked))); r.ok ? pick(S.slot) : toast(r.error); }
   else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, 'pokemon.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
