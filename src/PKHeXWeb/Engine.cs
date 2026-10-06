@@ -247,33 +247,150 @@ public static partial class Engine
 
     // ---------- creating and moving Pokémon (boxes only for now) ----------
 
+    // ---------- legal generation from the encounter database ----------
+
+    static List<IEncounterable> Encs = [];
+    static int EncsSpecies = -1;
+
+    static object? Call(object target, string method, params object[] args)
+    {
+        foreach (var m in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (m.Name != method || m.GetParameters().Length != args.Length) continue;
+            try { return m.Invoke(target, args); } catch { }
+        }
+        return null;
+    }
+
+    // GenerateEncounters' signature has changed between PKHeX versions (array, IReadOnlyList,
+    // ReadOnlyMemory for moves; one version or a list of versions), so build the arguments at runtime.
+    static List<IEncounterable> FindEncounters(PKM template)
+    {
+        var result = new List<IEncounterable>();
+        var t = typeof(SaveFile).Assembly.GetType("PKHeX.Core.EncounterMovesetGenerator");
+        if (t is null) return result;
+        foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+        {
+            if (m.Name != "GenerateEncounters") continue;
+            var ps = m.GetParameters();
+            if (ps.Length != 3 || ps[0].ParameterType != typeof(PKM)) continue;
+            object? moves = MakeMoves(ps[1].ParameterType), vers = MakeVersions(ps[2].ParameterType);
+            if (moves is null || vers is null) continue;
+            try
+            {
+                if (m.Invoke(null, [template, moves, vers]) is System.Collections.IEnumerable e)
+                {
+                    foreach (var x in e) if (x is IEncounterable enc) result.Add(enc);
+                    return result;
+                }
+            }
+            catch { }
+        }
+        return result;
+    }
+
+    static object? MakeMoves(Type t)
+    {
+        if (t == typeof(ushort[])) return Array.Empty<ushort>();
+        if (t == typeof(ReadOnlyMemory<ushort>)) return ReadOnlyMemory<ushort>.Empty;
+        if (t.IsAssignableFrom(typeof(ushort[]))) return Array.Empty<ushort>();
+        return null;
+    }
+
+    static object? MakeVersions(Type t)
+    {
+        var v = Sav!.Version;
+        if (t == typeof(GameVersion)) return v;
+        if (t == typeof(GameVersion[]) || t.IsAssignableFrom(typeof(GameVersion[]))) return new[] { v };
+        return null;
+    }
+
+    static object? Prop(object o, string name) => o.GetType().GetProperty(name)?.GetValue(o);
+
+    static string EncName(IEncounterable e) => (Prop(e, "LongName") ?? Prop(e, "Name") ?? e.GetType().Name).ToString()!;
+
+    static PKM? Template(int species, int form)
+    {
+        var pk = Sav!.BlankPKM.Clone();
+        pk.Species = (ushort)species;
+        TrySet(pk, ["Form"], form);
+        return pk;
+    }
+
     [JSExport]
-    public static string CreatePokemon(int box, int slot, int species, int level)
+    public static string ListEncounters(int species)
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            if (species < 1 || species >= GameInfo.Strings.Species.Count()) return Err("Invalid species number.");
+            Encs = FindEncounters(Template(species, 0)!);
+            EncsSpecies = species;
+            var list = Encs.Select((e, i) => new
+            {
+                i, name = EncName(e), kind = e.GetType().Name.Replace("Encounter", ""),
+                species = Prop(e, "Species")?.ToString(), min = Prop(e, "LevelMin")?.ToString(), max = Prop(e, "LevelMax")?.ToString(),
+                version = Prop(e, "Version")?.ToString(),
+            });
+            return J(new { ok = true, encounters = list });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
+    // Builds a Pokémon from one encounter, adjusts it to the wanted species/level, and returns it only if it passes the legality check.
+    static (PKM? pk, string report) Build(IEncounterable enc, int species, int level)
+    {
+        if (enc is not IEncounterConvertible conv) return (null, "Encounter can't be converted.");
+        PKM pk;
+        try { pk = conv.ConvertToPKM(Sav!, EncounterCriteria.Unrestricted); }
+        catch (Exception e) { return (null, e.Message); }
+        if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
+
+        var first = true; string report = "";
+        int min = Math.Max(1, Convert.ToInt32(Prop(enc, "LevelMin") ?? 1));
+        var tries = new List<int> { Math.Max(level, min) };
+        if (pk.Species != species) tries.AddRange(new[] { 16, 20, 25, 30, 32, 36, 40, 45, 50, 55, 65, 100 }.Where(l => l > tries[0]));
+        foreach (var lv in tries)
+        {
+            var c = pk.Clone();
+            if (c.Species != species)
+            {
+                c.Species = (ushort)species;
+                Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
+                Call(c, "ClearNickname");
+            }
+            if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
+            c.RefreshChecksum();
+            var la = new LegalityAnalysis(c);
+            if (first) { report = la.Report(); first = false; }
+            if (la.Valid) return (c, "");
+        }
+        return (null, report);
+    }
+
+    [JSExport]
+    public static string CreatePokemon(int box, int slot, int species, int level, int encounter)
     {
         try
         {
             if (Sav is null) return NoSave();
             if (box < 0 || box >= Sav.BoxCount || slot < 0 || slot >= Sav.BoxSlotCount) return Err("Invalid box slot.");
-            var names = GameInfo.Strings.Species;
-            if (species < 1 || species >= names.Count()) return Err("Invalid species number.");
+            if (species < 1 || species >= GameInfo.Strings.Species.Count()) return Err("Invalid species number.");
             if (level < 1 || level > 100) return Err("Level must be 1-100.");
+            if (EncsSpecies != species) { Encs = FindEncounters(Template(species, 0)!); EncsSpecies = species; }
+            if (Encs.Count == 0) return Err("No legal encounter found for that species in this game.");
 
-            var pk = Sav.BlankPKM.Clone();
-            pk.Species = (ushort)species;
-            pk.CurrentLevel = (byte)level;
-            pk.Nickname = names.ElementAt(species);
-            pk.PID = (uint)Random.Shared.NextInt64(1, uint.MaxValue);
-            TrySet(pk, ["OriginalTrainerName", "OT_Name"], Sav.OT);
-            var tid = TryGet(Sav, ["TID16", "TID"]); if (tid is not null) TrySet(pk, ["TID16", "TID"], tid);
-            var sid = TryGet(Sav, ["SID16", "SID"]); if (sid is not null) TrySet(pk, ["SID16", "SID"], sid);
-            TrySet(pk, ["EncryptionConstant"], pk.PID);
-            TrySet(pk, ["Language"], 2);
-            foreach (var iv in new[] { "IV_HP", "IV_ATK", "IV_DEF", "IV_SPA", "IV_SPD", "IV_SPE" })
-                TrySet(pk, [iv], 31);
-            TrySet(pk, ["Move1"], 1);
-            pk.RefreshChecksum();
-            Store(pk, box, slot);
-            return J(new { ok = true });
+            // encounter >= 0: use that one. Otherwise try encounters in order (capped, so it stays fast in the browser).
+            var candidates = encounter >= 0 && encounter < Encs.Count ? [Encs[encounter]] : Encs.Take(80).ToList();
+            string firstReport = "";
+            foreach (var enc in candidates)
+            {
+                var (pk, report) = Build(enc, species, level);
+                if (pk is null) { if (firstReport == "") firstReport = report; continue; }
+                Store(pk, box, slot);
+                return J(new { ok = true, encounter = EncName(enc) });
+            }
+            return Err("Couldn't build a legal version at that level.\n" + firstReport);
         }
         catch (Exception e) { return Err(e.Message); }
     }
