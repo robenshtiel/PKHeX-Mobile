@@ -178,7 +178,7 @@ public static partial class Engine
     [
         "RD", "GN", "BU", "YW", "GD", "SI", "C", "R", "S", "E", "FR", "LG", "D", "P", "Pt", "HG", "SS",
         "B", "W", "B2", "W2", "X", "Y", "OR", "AS", "SN", "MN", "US", "UM", "GP", "GE", "SW", "SH",
-        "BD", "SP", "PLA", "SL", "VL",
+        "BD", "SP", "PLA", "SL", "VL", "ZA",
     ];
 
     [JSExport]
