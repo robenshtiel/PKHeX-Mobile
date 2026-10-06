@@ -4,9 +4,9 @@ const log = (o) => (out.textContent = typeof o === 'string' ? o : JSON.stringify
 addEventListener('error', (e) => log('Error: ' + e.message));
 addEventListener('unhandledrejection', (e) => log('Error: ' + (e.reason?.message ?? e.reason)));
 
-const { getAssemblyExports, getConfig } = await dotnet.create();
+const { getAssemblyExports, getConfig, runMain } = await dotnet.create();
 const E = (await getAssemblyExports(getConfig().mainAssemblyName)).PkhexWeb.Engine;
-await dotnet.run();
+await runMain();
 document.getElementById('status').textContent = 'Engine loaded. Open a save file.';
 
 const step = (name, fn) => {
