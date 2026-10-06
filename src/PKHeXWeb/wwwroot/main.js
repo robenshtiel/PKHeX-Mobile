@@ -269,7 +269,8 @@ $('ed').addEventListener('click', (e) => {
 $('load').onclick = () => $('file').click();
 $('file').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; const b = new Uint8Array(await f.arrayBuffer()); setup(call(() => J(E.LoadSave(b, f.name)))); e.target.value = ''; };
 $('newbtn').onclick = () => { $('newp').hidden = !$('newp').hidden; };
-for (const g of J(E.ListGames())) $('game').add(new Option(g, g));
+for (const g of J(E.ListGames())) $('game').add(new Option(GAME[g] ?? g, g));
+$('trainer').value ||= 'Rob'; $('trainer').placeholder = 'Rob';
 if ([...$('game').options].some((o) => o.value === 'E')) $('game').value = 'E';
 $('mk').onclick = () => setup(call(() => J(E.NewSave($('game').value, $('trainer').value))));
 $('dlsave').onclick = () => S.info ? download(E.ExportSave(), 'edited.sav') : toast('Open or create a save first.');
