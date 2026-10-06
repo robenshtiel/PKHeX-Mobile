@@ -26,7 +26,7 @@ const TAB = {
   'OT / Misc': /^(OriginalTrainer|OT_|HandlingTrainer|HT_|TID|SID|Language|Geo)/,
 };
 // Friendly names for the Origin game dropdown. Only games listed here are offered (plus the current value).
-const GAME = { RD: 'Red', GN: 'Green', BU: 'Blue', YW: 'Yellow', GD: 'Gold', SI: 'Silver', C: 'Crystal', R: 'Ruby', S: 'Sapphire', E: 'Emerald', FR: 'FireRed', LG: 'LeafGreen', CXD: 'Colosseum / XD', D: 'Diamond', P: 'Pearl', Pt: 'Platinum', HG: 'HeartGold', SS: 'SoulSilver', B: 'Black', W: 'White', B2: 'Black 2', W2: 'White 2', X: 'X', Y: 'Y', OR: 'Omega Ruby', AS: 'Alpha Sapphire', SN: 'Sun', MN: 'Moon', US: 'Ultra Sun', UM: 'Ultra Moon', GO: 'Pokémon GO', GP: 'Let’s Go, Pikachu!', GE: 'Let’s Go, Eevee!', SW: 'Sword', SH: 'Shield', BD: 'Brilliant Diamond', SP: 'Shining Pearl', PLA: 'Legends: Arceus', SL: 'Scarlet', VL: 'Violet' };
+const GAME = { RD: 'Red', GN: 'Green', BU: 'Blue', YW: 'Yellow', GD: 'Gold', SI: 'Silver', C: 'Crystal', R: 'Ruby', S: 'Sapphire', E: 'Emerald', FR: 'FireRed', LG: 'LeafGreen', CXD: 'Colosseum / XD', D: 'Diamond', P: 'Pearl', Pt: 'Platinum', HG: 'HeartGold', SS: 'SoulSilver', B: 'Black', W: 'White', B2: 'Black 2', W2: 'White 2', X: 'X', Y: 'Y', OR: 'Omega Ruby', AS: 'Alpha Sapphire', SN: 'Sun', MN: 'Moon', US: 'Ultra Sun', UM: 'Ultra Moon', GO: 'Pokémon GO', GP: 'Let’s Go, Pikachu!', GE: 'Let’s Go, Eevee!', SW: 'Sword', SH: 'Shield', BD: 'Brilliant Diamond', SP: 'Shining Pearl', PLA: 'Legends: Arceus', SL: 'Scarlet', VL: 'Violet', ZA: 'Legends: Z-A' };
 const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main' };
 let legalDirty = true;
 const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg|Ability|Move[1-4]$)/;
@@ -181,7 +181,11 @@ function view() {
   const nick = by('Nickname')?.value || name, shiny = S.slots[S.slot]?.shiny;
   const list = (re) => P.filter((p) => re.test(p.name));
   let h = '';
-  if (S.tab === 'Main') h = `<div class="fg">${list(TAB.Main).map(ctl).join('')}</div>`;
+  if (S.tab === 'Main') {
+    const ORDER = ['Species', 'Form', 'Nickname', 'IsNicknamed', 'Gender', 'IsShiny', 'IsEgg', 'CurrentLevel', 'EXP', 'Nature', 'StatNature', 'Ability', 'AbilityNumber', 'HeldItem', 'CurrentFriendship', 'HeightScalar', 'WeightScalar', 'Scale', 'PID', 'EncryptionConstant'];
+    const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
+    h = `<div class="fg">${list(TAB.Main).sort((a, b) => rank(a.name) - rank(b.name)).map(ctl).join('')}</div>`;
+  }
   if (S.tab === 'Stats') {
     const ht = (x) => by('HT_' + x), hasHT = ST.some((x) => ht(x)), evCap = by('EV_HP')?.max === '252';
     const evTotal = ST.reduce((a, x) => a + (+(by('EV_' + x)?.value ?? 0)), 0);
@@ -271,7 +275,7 @@ $('file').onchange = async (e) => { const f = e.target.files[0]; if (!f) return;
 $('newbtn').onclick = () => { $('newp').hidden = !$('newp').hidden; };
 for (const g of J(E.ListGames())) $('game').add(new Option(GAME[g] ?? g, g));
 $('trainer').value ||= 'Rob'; $('trainer').placeholder = 'Rob';
-if ([...$('game').options].some((o) => o.value === 'E')) $('game').value = 'E';
+if ([...$('game').options].some((o) => o.value === 'ZA')) $('game').value = 'ZA';
 $('mk').onclick = () => setup(call(() => J(E.NewSave($('game').value, $('trainer').value))));
 $('dlsave').onclick = () => S.info ? download(E.ExportSave(), 'edited.sav') : toast('Open or create a save first.');
 $('theme').onclick = () => { const r = document.documentElement, d = (r.dataset.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light')) === 'dark'; r.dataset.theme = d ? 'light' : 'dark'; };
