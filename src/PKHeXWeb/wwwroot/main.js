@@ -27,7 +27,7 @@ const TAB = {
 };
 // Friendly names for the Origin game dropdown. Only games listed here are offered (plus the current value).
 const GAME = { RD: 'Red', GN: 'Green', BU: 'Blue', YW: 'Yellow', GD: 'Gold', SI: 'Silver', C: 'Crystal', R: 'Ruby', S: 'Sapphire', E: 'Emerald', FR: 'FireRed', LG: 'LeafGreen', CXD: 'Colosseum / XD', D: 'Diamond', P: 'Pearl', Pt: 'Platinum', HG: 'HeartGold', SS: 'SoulSilver', B: 'Black', W: 'White', B2: 'Black 2', W2: 'White 2', X: 'X', Y: 'Y', OR: 'Omega Ruby', AS: 'Alpha Sapphire', SN: 'Sun', MN: 'Moon', US: 'Ultra Sun', UM: 'Ultra Moon', GO: 'Pokémon GO', GP: 'Let’s Go, Pikachu!', GE: 'Let’s Go, Eevee!', SW: 'Sword', SH: 'Shield', BD: 'Brilliant Diamond', SP: 'Shining Pearl', PLA: 'Legends: Arceus', SL: 'Scarlet', VL: 'Violet', ZA: 'Legends: Z-A' };
-const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main' };
+const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main', note: '' };
 let legalDirty = true;
 const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg|Ability|Move[1-4]$)/;
 const ONLY_LEGAL = /^(Move[1-4]|RelearnMove[1-4]|Ability)$/;
@@ -48,7 +48,14 @@ function ctl(p) {
   return `<label class="f">${lbl}<input data-p="${p.name}" type="${NUM.test(p.type) ? 'number' : 'text'}"${NUM.test(p.type) && p.min != null ? ` min="${p.min}" max="${p.max}" step="1"` : ''} value="${esc(v)}"></label>`;
 }
 
+function updateHist() {
+  const u = $('undobtn'), r = $('redobtn'); if (!u || !r) return;
+  const h = call(() => J(E.HistoryState()));
+  u.disabled = !(h.undo > 0); r.disabled = !(h.redo > 0);
+}
+
 function loadGrid() {
+  updateHist();
   const r = call(() => J(S.box < 0 ? E.GetParty() : E.GetBox(S.box)));
   S.slots = r.slots ?? [];
   $('grid').innerHTML = S.slots.map((s) => s.empty
@@ -71,7 +78,7 @@ function empty() { $('ed').classList.remove('open'); $('ed').innerHTML = '<p cla
 function pick(i) {
   S.slot = i; const s = S.slots[i]; loadGrid();
   if (s.empty) return showEmpty();
-  S.props = call(() => J(E.GetProps(S.box, i))).props ?? []; legalDirty = true; loadOpts(); S.tab = 'Main'; view();
+  S.props = call(() => J(E.GetProps(S.box, i))).props ?? []; legalDirty = true; loadOpts(); S.tab = 'Main'; S.note = ''; view();
 }
 
 function showEmpty() {
@@ -311,7 +318,7 @@ function view() {
   }
   if (S.tab === 'OT / Misc') h = `<div class="fg">${list(TAB['OT / Misc']).filter((p) => !HT_FLAG.test(p.name)).map(ctl).join('')}</div>`;
   if (S.tab === 'All fields') h = `<label class="f">Search<input id="q" type="search" placeholder="Filter fields"></label><div class="fg all" style="margin-top:10px">${P.map(ctl).join('')}</div>`;
-  if (S.tab === 'Legality') { const r = call(() => J(E.Legality(S.box, S.slot))); h = r.ok ? `<p class="${r.valid ? 'ok' : 'bad'}">${r.valid ? 'Legal' : 'Not legal'}</p><pre>${esc(r.report)}</pre>` : `<p class="bad">${esc(r.error)}</p>`; }
+  if (S.tab === 'Legality') { const r = call(() => J(E.Legality(S.box, S.slot))); h = r.ok ? `<p class="${r.valid ? 'ok' : 'bad'}">${r.valid ? 'Legal' : 'Not legal'}</p><div style="margin:8px 0"><button class="btn pri" id="autofix"${r.valid ? ' disabled title="Already legal"' : ''}>Auto-legalise</button></div>${S.note ? `<p class="hint">${esc(S.note)}</p>` : ''}<pre>${esc(r.report)}</pre>` : `<p class="bad">${esc(r.error)}</p>`; }
   const tabs = ['Main', 'Stats', 'Moves', 'Cosmetic', 'Met', 'OT / Misc', 'All fields', 'Legality'];
   $('ed').innerHTML = `<div class="top"><div class="av">${img(id, shiny)}</div><div><h2>${esc(nick)}${shiny ? ' ✦' : ''}</h2><small>${esc(name)} · Lv ${esc(lvl)}</small></div><button class="btn" id="exp">Export</button><button class="btn cl" id="cl">Close</button></div>
 <div class="tabs" role="tablist">${tabs.map((t) => `<button role="tab" class="${t === S.tab ? 'on' : ''}" data-t="${t}">${t}</button>`).join('')}</div>${h}`;
@@ -326,6 +333,25 @@ function edit(n, v) {
   const r = call(() => J(E.SetProp(S.box, S.slot, n, String(v))));
   if (!r.ok) toast(r.error);
   if (r.ok && /_PPUps$/.test(n)) E.HealPP(S.box, S.slot);
+  refresh();
+}
+function autoLegalise() {
+  const b = $('autofix'); if (b) { b.disabled = true; b.textContent = 'Legalising…'; }
+  setTimeout(() => { // let the button repaint first; the checks run on the main thread
+    const r = call(() => J(E.AutoLegalise(S.box, S.slot)));
+    if (!r.ok) { S.note = ''; toast(r.error); return view(); }
+    legalDirty = true;
+    if (!r.changed) S.note = r.message;
+    else S.note = [r.steps?.length ? 'Fixed: ' + r.steps.join(', ') + '.' : '', r.dropped?.length ? "Couldn't keep: " + r.dropped.join(', ') + '.' : '',
+      r.valid ? 'Now legal.' : `${r.remaining} issue(s) still need manual attention.`].filter(Boolean).join(' ');
+    r.changed ? refresh() : view();
+  }, 30);
+}
+function afterHistory(r) {
+  if (!r.ok) return toast(r.error);
+  S.box = r.box; S.slot = r.slot; legalDirty = true; S.note = '';
+  loadGrid();
+  if (S.slots[r.slot]?.empty) return showEmpty();
   refresh();
 }
 function download(bytes, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes])); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
@@ -359,6 +385,7 @@ $('ed').addEventListener('click', (e) => {
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
   else if (t.dataset.max) { const v = maxFor(t.dataset.max); if (v != null) edit(t.dataset.max, v); }
   else if (t.id === 'rbopen') openRibbons();
+  else if (t.id === 'autofix') autoLegalise();
 });
 {
   const lab = document.createElement('label'); lab.className = 'btn'; lab.title = 'Automatically set Plus / mastery flags when species, level or moves change';
@@ -377,4 +404,22 @@ if ([...$('game').options].some((o) => o.value === 'ZA')) $('game').value = 'ZA'
 $('mk').onclick = () => setup(call(() => J(E.NewSave($('game').value, $('trainer').value))));
 $('dlsave').onclick = () => S.info ? download(E.ExportSave(), 'edited.sav') : toast('Open or create a save first.');
 $('theme').onclick = () => { const r = document.documentElement, d = (r.dataset.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light')) === 'dark'; r.dataset.theme = d ? 'light' : 'dark'; };
+// ---- top bar: File menu and undo/redo ----
+{
+  const fb = $('filebtn'), fm = $('filemenu');
+  const close = () => { fm.hidden = true; fb.setAttribute('aria-expanded', 'false'); };
+  fb.onclick = (e) => { e.stopPropagation(); fm.hidden = !fm.hidden; fb.setAttribute('aria-expanded', String(!fm.hidden)); };
+  document.addEventListener('click', (e) => { if (!fm.contains(e.target) && e.target !== fb) close(); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  for (const id of ['load', 'dlsave', 'mk']) $(id).addEventListener('click', close);   // "New blank save" stays open so its form can be filled in
+  $('undobtn').onclick = () => afterHistory(call(() => J(E.UndoEdit())));
+  $('redobtn').onclick = () => afterHistory(call(() => J(E.RedoEdit())));
+  addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? '')) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); $('undobtn').click(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); $('redobtn').click(); }
+  });
+  updateHist();
+}
 empty();

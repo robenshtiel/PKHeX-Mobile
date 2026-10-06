@@ -65,12 +65,20 @@ h3{font-size:14px;margin:16px 0 8px}
 .ok{color:#2a9d5c;font-weight:700}.bad{color:var(--ac);font-weight:700}
 pre{white-space:pre-wrap;background:var(--in);padding:10px;border-radius:10px}
 .top .btn{flex:none}[hidden]{display:none!important}
+.fmenu{position:relative}
+.fm{position:absolute;right:0;top:calc(100% + 6px);z-index:30;min-width:240px;max-width:min(90vw,320px);padding:8px;display:flex;flex-direction:column;gap:6px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.28)}
+.fm .btn{width:100%;text-align:left}.fm hr{width:100%;border:0;border-top:1px solid var(--bd);margin:2px 0}.fm #newp p{margin:10px 0 0}
+.btn:disabled{opacity:.4;cursor:default}
 header{flex-wrap:wrap;gap:8px}header h1{white-space:nowrap;flex:1 0 auto}header .btn{padding:6px 10px;font-size:14px}
 </style></head><body>
-<header><h1>PKHeX Web</h1><button class="btn" id="theme">Theme</button><button class="btn" id="dlsave">Download save</button><button class="btn" id="newbtn">New</button><button class="btn pri" id="load">Open save</button><input type="file" id="file" hidden></header>
+<header><h1>PKHeX Web</h1><button class="btn" id="undobtn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button><button class="btn" id="redobtn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled>↷</button><button class="btn" id="theme">Theme</button>
+<div class="fmenu"><button class="btn pri" id="filebtn" aria-haspopup="menu" aria-expanded="false" aria-controls="filemenu">File ▾</button>
+<div class="fm" id="filemenu" role="menu" hidden><button class="btn" id="load">Open save</button><button class="btn" id="newbtn">New blank save</button>
+<div id="newp" hidden><div class="fg"><label class="f">Game<select id="game"></select></label><label class="f">Trainer name<input id="trainer" value="Rob"></label></div><p><button class="btn pri" id="mk">Create save</button></p></div>
+<hr><button class="btn" id="dlsave">Download save</button></div></div><input type="file" id="file" hidden></header>
 <main>
 <section class="card"><div class="bx"><button class="btn" id="pv" aria-label="Previous box">‹</button><select id="boxsel" class="btn" aria-label="Box"></select><button class="btn" id="nx" aria-label="Next box">›</button></div>
-<div class="grid" id="grid"></div><p class="hint" id="hint">Open a save file, or tap New to make a test save.</p>
-<div id="newp" hidden><h3>New test save</h3><div class="fg"><label class="f">Game<select id="game"></select></label><label class="f">Trainer name<input id="trainer" value="Rob"></label></div><p><button class="btn pri" id="mk">Create save</button></p></div></section>
+<div class="grid" id="grid"></div><p class="hint" id="hint">Open a save file from the File menu, or choose New blank save.</p>
+</section>
 <section class="ed" id="ed" aria-label="Pokémon editor"></section>
 </main><script type="module" src="./main.js"></script></body></html>
