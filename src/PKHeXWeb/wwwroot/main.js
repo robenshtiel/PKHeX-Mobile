@@ -83,6 +83,7 @@ function showEmpty() {
 <p><button class="btn pri" id="create">Create Pokémon</button></p>
 <label class="f">Or import a Pokémon file<input type="file" id="impf"></label>`;
   if ($('nsp')) { $('nsp').value = 25; loadEncounters(); }
+  enhance(ed);
   ed.classList.add('open');
 }
 
@@ -93,6 +94,7 @@ function loadEncounters() {
     const lv = e.min ? (e.min === e.max ? ` Lv ${e.min}` : ` Lv ${e.min}-${e.max}`) : '';
     return `<option value="${e.i}">${esc(nice(e.kind))}: ${esc(e.name)}${lv}</option>`;
   }).join('');
+  sel.value = '-1'; sel._cbSync?.();
   if (!r.ok) toast(r.error);
 }
 
@@ -175,6 +177,91 @@ function openRibbons() {
   }, 30);
 }
 
+// ---------- searchable dropdowns ----------
+// Turns the plain <select> for long lists (species, moves, items, natures, locations, encounters) into a search box
+// with a filtered drop-down. The real <select> stays in the DOM (hidden), so all existing change handlers keep working.
+const COMBO = /^(Species|Move[1-4]|RelearnMove[1-4]|AlphaMove|HeldItem|Item|Nature|StatNature|Met_?Location|Egg_?Location)$/;
+const COMBO_IDS = new Set(['nsp', 'nenc']);
+const CB_MAX = 400;
+document.head.appendChild(Object.assign(document.createElement('style'), { textContent:
+  '.cb{position:relative;display:block}.cb .cbi{width:100%;box-sizing:border-box}' +
+  '.cbl{position:fixed;z-index:1000;margin:0;padding:4px;list-style:none;overflow:auto;border:1px solid #8886;border-radius:8px;box-shadow:0 8px 24px #0005}' +
+  '.cbl li{padding:6px 8px;border-radius:6px;cursor:pointer}.cbl li.act{background:#6366f133}.cbl li.cur{font-weight:600}' +
+  '.cbl li.msg{cursor:default;opacity:.65;font-size:12px}' }));
+
+function combo(sel) {
+  if (sel.dataset.cb) return; sel.dataset.cb = '1';
+  const wrap = document.createElement('div'); wrap.className = 'cb';
+  const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'cbi'; inp.autocomplete = 'off'; inp.spellcheck = false;
+  inp.placeholder = 'Search…'; inp.setAttribute('role', 'combobox'); inp.setAttribute('aria-autocomplete', 'list'); inp.disabled = sel.disabled; inp.title = sel.title;
+  const ul = document.createElement('ul'); ul.className = 'cbl'; ul.hidden = true; ul.setAttribute('role', 'listbox');
+  sel.hidden = true; sel.after(wrap); wrap.append(inp, ul);
+
+  const cur = () => sel.selectedOptions[0];
+  const sync = () => { inp.value = cur()?.textContent ?? ''; };
+  sel._cbSync = sync; sync();
+
+  let shown = [], act = -1;
+  const paint = () => {
+    [...ul.children].forEach((li, i) => li.classList.toggle('act', i === act));
+    ul.children[act]?.scrollIntoView({ block: 'nearest' });
+  };
+  const place = () => {
+    const r = inp.getBoundingClientRect(), below = innerHeight - r.bottom - 12, above = r.top - 12, up = below < 180 && above > below;
+    const h = Math.max(120, Math.min(300, up ? above : below));
+    Object.assign(ul.style, { left: r.left + 'px', width: r.width + 'px', maxHeight: h + 'px', top: up ? '' : r.bottom + 2 + 'px', bottom: up ? innerHeight - r.top + 2 + 'px' : '' });
+    const cs = getComputedStyle(document.body);
+    ul.style.background = cs.backgroundColor === 'rgba(0, 0, 0, 0)' ? 'Canvas' : cs.backgroundColor; ul.style.color = cs.color;
+  };
+  const render = (q, jump) => {
+    q = q.trim().toLowerCase();
+    const all = [...sel.options];
+    let m = !q ? all : all.filter((o) => o.textContent.toLowerCase().includes(q) || o.value === q);
+    if (q) m = [...m.filter((o) => o.textContent.toLowerCase().startsWith(q)), ...m.filter((o) => !o.textContent.toLowerCase().startsWith(q))];
+    const more = m.length - CB_MAX; shown = m.slice(0, CB_MAX);
+    ul.innerHTML = shown.map((o, i) => `<li role="option" data-i="${i}" class="${o === cur() ? 'cur' : ''}">${esc(o.textContent)}</li>`).join('')
+      + (more > 0 ? `<li class="msg">${more} more — keep typing to narrow</li>` : '') + (m.length ? '' : '<li class="msg">No matches</li>');
+    act = jump ? Math.max(0, shown.indexOf(cur())) : 0;
+    paint();
+  };
+  const open = () => { if (inp.disabled) return; render('', true); place(); ul.hidden = false; paint(); };
+  const close = () => { ul.hidden = true; sync(); };
+  const choose = (o) => {
+    if (!o) return;
+    const changed = sel.value !== o.value; sel.value = o.value; close(); inp.blur();
+    if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  inp.addEventListener('focus', () => { open(); inp.select(); });
+  inp.addEventListener('click', () => { if (ul.hidden) { open(); inp.select(); } });
+  inp.addEventListener('input', () => { if (ul.hidden) { place(); ul.hidden = false; } render(inp.value, false); });
+  inp.addEventListener('blur', () => { setTimeout(() => { if (!ul.hidden) close(); }, 0); });
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); if (ul.hidden) return open();
+      act = Math.max(0, Math.min(shown.length - 1, act + (e.key === 'ArrowDown' ? 1 : -1))); paint();
+    } else if (e.key === 'Enter') { e.preventDefault(); if (!ul.hidden) choose(shown[act]); }
+    else if (e.key === 'Escape') { if (!ul.hidden) { e.stopPropagation(); close(); inp.blur(); } }
+    else if (e.key === 'Tab') close();
+  });
+  // mousedown (not click) so the input doesn't lose focus before the choice registers
+  ul.addEventListener('mousedown', (e) => {
+    e.preventDefault(); const li = e.target.closest('li[data-i]'); if (li) choose(shown[+li.dataset.i]);
+  });
+  addEventListener('scroll', (e) => { if (!ul.hidden && !ul.contains(e.target)) place(); }, true);
+  addEventListener('resize', () => { if (!ul.hidden) place(); });
+}
+const enhance = (root) => root.querySelectorAll('select').forEach((s) => { if (COMBO_IDS.has(s.id) || COMBO.test(s.dataset.p ?? '')) combo(s); });
+
+// <species number>-<species name>-<ball>-<origin game>
+const exportName = () => {
+  const id = +(by('Species')?.value ?? 0);
+  const bv = by('Ball')?.value, ball = S.opts.Ball?.find((o) => String(o.v) === bv)?.t ?? bv;
+  const gv = by('Version')?.value, game = gv ? (GAME[gv] ?? gv) : '';
+  const clean = (x) => String(x ?? '').replace(/[\\/:*?"<>|]/g, '').trim().replace(/\s+/g, '_');
+  return [String(id).padStart(4, '0'), clean(N.species[id]) || 'Unknown', clean(ball), clean(game)].filter(Boolean).join('-');
+};
+
 function view() {
   const P = S.props, m = by('Species'), lvl = by('CurrentLevel')?.value ?? '?';
   const id = +(m?.value ?? 0), name = N.species[id] ?? '';
@@ -229,6 +316,7 @@ function view() {
   $('ed').innerHTML = `<div class="top"><div class="av">${img(id, shiny)}</div><div><h2>${esc(nick)}${shiny ? ' ✦' : ''}</h2><small>${esc(name)} · Lv ${esc(lvl)}</small></div><button class="btn" id="exp">Export</button><button class="btn cl" id="cl">Close</button></div>
 <div class="tabs" role="tablist">${tabs.map((t) => `<button role="tab" class="${t === S.tab ? 'on' : ''}" data-t="${t}">${t}</button>`).join('')}</div>${h}`;
   $('ed').querySelectorAll('select[data-v]').forEach((s) => { s.value = s.dataset.v; });
+  enhance($('ed'));
   $('ed').classList.add('open');
 }
 
@@ -265,7 +353,7 @@ $('ed').addEventListener('click', (e) => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.id === 'cl') $('ed').classList.remove('open');
   else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked, !!$('nal')?.checked))); r.ok ? pick(S.slot) : toast(r.error); }
-  else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, 'pokemon.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
+  else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, exportName() + '.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
   else if (t.dataset.plus) { const r = call(() => J(E.ApplyPlus(S.box, S.slot, t.dataset.plus === '1'))); r.ok ? (legalDirty = true, refresh()) : toast(r.error); }
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
