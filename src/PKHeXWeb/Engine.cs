@@ -278,6 +278,65 @@ public static partial class Engine
                 if (idx >= 0) Call(pk, "RefreshAbility", idx);
             }
             if (System.Text.RegularExpressions.Regex.IsMatch(name, "^Move[1-4]$")) Call(pk, "HealPP");
+            if (AutoLegal && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version|Move[1-4])$")) ApplyPlusFlags(pk, false);
+            pk.RefreshChecksum();
+            Store(pk, box, slot);
+            return J(new { ok = true });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
+    // ---------- Plus flags (Legends: Z-A) and move mastery (Legends: Arceus) ----------
+
+    static bool AutoLegal = true;
+
+    [JSExport]
+    public static bool AlphaSupported() => Sav is not null && FindProp(Sav.BlankPKM.GetType(), "IsAlpha") is not null;
+
+    [JSExport]
+    public static void SetAutoLegal(bool on) => AutoLegal = on;
+
+    static IEnumerable<MethodInfo> StaticMethods(string typeName, string method) =>
+        typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsAbstract && t.IsSealed && t.IsPublic && t.Name == typeName)
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static)).Where(m => m.Name == method && !m.IsGenericMethodDefinition);
+
+    static MethodInfo? PlusMethod(PKM pk) => StaticMethods("PlusRecordApplicator", "SetPlusFlags").FirstOrDefault(m =>
+        { var ps = m.GetParameters(); return ps.Length == 4 && ps[0].ParameterType.IsInstanceOfType(pk) && ps[1].ParameterType == typeof(PKM) && ps[3].ParameterType.IsEnum; });
+
+    static MethodInfo? ShopMethod(PKM pk, bool all) => StaticMethods("MoveShopRecordApplicator", all ? "SetMoveShopFlagsAll" : "SetMoveShopFlags").FirstOrDefault(m =>
+        { var ps = m.GetParameters(); return ps.Length == 2 && ps[0].ParameterType.IsInstanceOfType(pk) && ps[1].ParameterType == typeof(PKM); });
+
+    // all = false: flags the legality check needs for the moves it knows. all = true: every flag that could legally be set.
+    static bool ApplyPlusFlags(PKM pk, bool all)
+    {
+        try
+        {
+            if (PlusMethod(pk) is { } pm)
+            {
+                var ps = pm.GetParameters();
+                var permit = Prop(pk, "PersonalInfo");
+                if (permit is null || !ps[2].ParameterType.IsInstanceOfType(permit)) return false;
+                var opt = Enum.Parse(ps[3].ParameterType, all ? "LegalSeedTM" : "LegalCurrent");
+                pm.Invoke(null, [pk, pk, permit, opt]);
+                return true;
+            }
+            if (ShopMethod(pk, all) is { } sm) { sm.Invoke(null, [pk, pk]); return true; }
+        }
+        catch { }
+        return false;
+    }
+
+    [JSExport]
+    public static bool PlusSupported(int box, int slot) => Slot(box, slot) is { } pk && (PlusMethod(pk) is not null || ShopMethod(pk, false) is not null);
+
+    [JSExport]
+    public static string ApplyPlus(int box, int slot, bool all)
+    {
+        try
+        {
+            var pk = Slot(box, slot);
+            if (pk is null) return Err("No Pokémon in that slot.");
+            if (!ApplyPlusFlags(pk, all)) return Err("This Pokémon has no Plus/mastery flags (or PKHeX couldn't apply them).");
             pk.RefreshChecksum();
             Store(pk, box, slot);
             return J(new { ok = true });
@@ -1034,7 +1093,7 @@ public static partial class Engine
     }
 
     [JSExport]
-    public static string CreatePokemon(int box, int slot, int species, int level, int encounter, bool shiny)
+    public static string CreatePokemon(int box, int slot, int species, int level, int encounter, bool shiny, bool alpha)
     {
         try
         {
@@ -1046,12 +1105,17 @@ public static partial class Engine
             if (Encs.Count == 0) return Err("No legal encounter found for that species in this game.");
 
             // encounter >= 0: use that one. Otherwise try encounters in order (capped, so it stays fast in the browser).
-            var candidates = encounter >= 0 && encounter < Encs.Count ? [Encs[encounter]] : Encs.Take(80).ToList();
+            var alphaGame = AlphaSupported();
+            var candidates = encounter >= 0 && encounter < Encs.Count ? [Encs[encounter]]
+                : Encs.Where(x => !alphaGame || (Prop(x, "IsAlpha") is true) == alpha).Take(80).ToList();
+            if (candidates.Count == 0) return Err(alpha ? "No Alpha encounter found for that species in this game." : "No legal encounter found for that species in this game.");
             string firstReport = "";
             foreach (var enc in candidates)
             {
                 var (pk, report) = Build(enc, species, level, shiny);
                 if (pk is null) { if (firstReport == "") firstReport = report; continue; }
+                if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa && pa != alpha) continue;
+                if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
                 return J(new { ok = true, encounter = EncName(enc) });
             }
