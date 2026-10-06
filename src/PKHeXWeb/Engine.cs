@@ -38,12 +38,19 @@ public static partial class Engine
         var before = Slot(box, slot);
         Put(pk, box, slot);
         if (before is null) return;
-        UndoStack.Add(new HistEdit(box, slot, before.Clone(), pk.Clone()));
+        var b = before.Clone(); var a = pk.Clone();
+        Record(box, slot, () => Put(b.Clone(), box, slot), () => Put(a.Clone(), box, slot));
+    }
+
+    // One undoable step. Box = -2 marks a save-wide edit (trainer fields, items, Pokédex) rather than a Pokémon slot.
+    record HistEdit(int Box, int Slot, Action Undo, Action Redo);
+
+    static void Record(int box, int slot, Action undo, Action redo)
+    {
+        UndoStack.Add(new HistEdit(box, slot, undo, redo));
         if (UndoStack.Count > 200) UndoStack.RemoveAt(0);
         RedoStack.Clear();
     }
-
-    record HistEdit(int Box, int Slot, PKM Before, PKM After);
     static readonly List<HistEdit> UndoStack = new(), RedoStack = new();
 
     static string HistStep(List<HistEdit> from, List<HistEdit> to, bool undo)
@@ -53,9 +60,9 @@ public static partial class Engine
             if (Sav is null) return NoSave();
             if (from.Count == 0) return Err(undo ? "Nothing to undo." : "Nothing to redo.");
             var e = from[^1]; from.RemoveAt(from.Count - 1);
-            Put((undo ? e.Before : e.After).Clone(), e.Box, e.Slot);
+            (undo ? e.Undo : e.Redo)();
             to.Add(e);
-            return J(new { ok = true, box = e.Box, slot = e.Slot });
+            return J(new { ok = true, kind = e.Box == -2 ? "save" : "slot", box = e.Box, slot = e.Slot });
         }
         catch (Exception ex) { return Err(ex.Message); }
     }
@@ -317,6 +324,7 @@ public static partial class Engine
             }
             if (System.Text.RegularExpressions.Regex.IsMatch(name, "^Move[1-4]$")) Call(pk, "HealPP");
             if (AutoLegal && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version|Move[1-4])$")) ApplyPlusFlags(pk, false);
+            if (AutoRelearn && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version)$")) FillSuggestedRelearn(pk);
             pk.RefreshChecksum();
             Store(pk, box, slot);
             return J(new { ok = true });
@@ -487,6 +495,38 @@ public static partial class Engine
             TrySet(c, [MoveProps[i] + "_PPUps"], 0);
         }
         Call(c, "HealPP");
+    }
+
+    // "Relearn all suggested moves": fills the relearn slots with what the encounter dictates, else PKHeX's suggested relearn moves.
+    static bool AutoRelearn = false;
+
+    [JSExport]
+    public static void SetAutoRelearn(bool on) => AutoRelearn = on;
+
+    static bool FillSuggestedRelearn(PKM pk)
+    {
+        if (FindProp(pk.GetType(), "RelearnMove1") is null) return false;
+        var la = Analyse(pk);
+        if (la is null) return false;
+        var want = ExpectedRelearn(la).Where(x => x > 0).ToList();
+        if (want.Count == 0) want = SuggestedRelearn(la).ToList();
+        for (int i = 0; i < 4; i++) TrySet(pk, [RelearnNames[i]], i < want.Count ? want[i] : 0);
+        return true;
+    }
+
+    [JSExport]
+    public static string RelearnSuggested(int box, int slot)
+    {
+        try
+        {
+            var pk = Slot(box, slot);
+            if (pk is null) return Err("No Pokémon in that slot.");
+            if (!FillSuggestedRelearn(pk)) return Err("This Pokémon has no relearn moves.");
+            pk.RefreshChecksum();
+            Store(pk, box, slot);
+            return J(new { ok = true });
+        }
+        catch (Exception e) { return Err(e.Message); }
     }
 
     static void FixRelearn(PKM c)
@@ -932,6 +972,16 @@ public static partial class Engine
         return null;
     }
 
+    // LegalityInfo.Moves is an array in older PKHeX builds and Memory<MoveResult> in newer ones (not enumerable), so handle both.
+    static object? FirstMoveResult(object? mv)
+    {
+        if (mv is null) return null;
+        if (mv is System.Collections.IEnumerable e) { foreach (var m in e) return m; return null; }
+        var ts = mv.GetType().GetMethod("ToArray", Type.EmptyTypes);
+        if (ts?.Invoke(mv, null) is Array a && a.Length > 0) return a.GetValue(0);
+        return null;
+    }
+
     // True if this move, placed alone in slot 1 of this exact Pokémon (same encounter data), passes the legality check.
     static bool MoveSlotValid(PKM pk, int move)
     {
@@ -942,10 +992,7 @@ public static partial class Engine
         ApplyPlusFlags(c, false);   // Z-A TM/Plus and Arceus mastery moves are only valid once their flags are set
         c.RefreshChecksum();
         var la = new LegalityAnalysis(c);
-        if (Prop(la, "Info") is { } info && Prop(info, "Moves") is System.Collections.IEnumerable mv)
-        {
-            foreach (var m in mv) if (Prop(m, "Valid") is bool ok) return ok;
-        }
+        if (Prop(la, "Info") is { } info && FirstMoveResult(Prop(info, "Moves")) is { } first && Prop(first, "Valid") is bool ok) return ok;
         return !la.Report().Split('\n').Any(l => l.StartsWith("Invalid") && (l.Contains("Move 1") || l.Contains("Move1")));
     }
 
@@ -972,7 +1019,10 @@ public static partial class Engine
 
         var set = new HashSet<int>();
         foreach (var m in cand) { try { if (MoveSlotValid(pk, m)) set.Add(m); } catch { } }
-        if (set.Count == 0) return null;
+        // If the probe accepts nothing beyond the Pokémon's own moves, the probe itself is failing (not the Pokémon),
+        // so return null and let the editor offer the full move list instead of a list of 4.
+        var own = MoveProps.Select(n => SafeInt(Prop(pk, n))).Where(x => x > 0).ToHashSet();
+        if (set.Count == 0 || set.All(own.Contains)) return null;
         if (MoveCache.Count > 64) MoveCache.Clear();
         MoveCache[key] = set;
         return set;
