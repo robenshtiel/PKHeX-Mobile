@@ -29,6 +29,7 @@ const TAB = {
 const GAME = { RD: 'Red', GN: 'Green', BU: 'Blue', YW: 'Yellow', GD: 'Gold', SI: 'Silver', C: 'Crystal', R: 'Ruby', S: 'Sapphire', E: 'Emerald', FR: 'FireRed', LG: 'LeafGreen', CXD: 'Colosseum / XD', D: 'Diamond', P: 'Pearl', Pt: 'Platinum', HG: 'HeartGold', SS: 'SoulSilver', B: 'Black', W: 'White', B2: 'Black 2', W2: 'White 2', X: 'X', Y: 'Y', OR: 'Omega Ruby', AS: 'Alpha Sapphire', SN: 'Sun', MN: 'Moon', US: 'Ultra Sun', UM: 'Ultra Moon', GO: 'Pokémon GO', GP: 'Let’s Go, Pikachu!', GE: 'Let’s Go, Eevee!', SW: 'Sword', SH: 'Shield', BD: 'Brilliant Diamond', SP: 'Shining Pearl', PLA: 'Legends: Arceus', SL: 'Scarlet', VL: 'Violet', ZA: 'Legends: Z-A' };
 const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main', note: '' };
 let legalDirty = true;
+const TR = { props: [], inv: null, dex: null, tab: 'Trainer', open: new Set() };   // Trainer window state
 const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg|Ability|Move[1-4]$)/;
 const ONLY_LEGAL = /^(Move[1-4]|RelearnMove[1-4]|Ability)$/;
 const loadOpts = () => {
@@ -66,7 +67,7 @@ function loadGrid() {
 
 function setup(info) {
   if (!info.ok) return toast(info.error);
-  S.info = info; S.slot = -1;
+  S.info = info; S.slot = -1; TR.props = []; TR.inv = TR.dex = null;
   $('boxsel').innerHTML = `<option value="-1">Party</option>` + Array.from({ length: info.boxes }, (_, i) => `<option value="${i}">Box ${i + 1}</option>`).join('');
   S.box = info.party > 0 ? -1 : 0;
   $('hint').textContent = `${info.game} · generation ${info.generation} · trainer ${info.ot}`;
@@ -291,6 +292,7 @@ function view() {
     h = [1, 2, 3, 4].map((i) => { const mv = by('Move' + i); if (!mv) return ''; const u = +(by(`Move${i}_PPUps`)?.value ?? 0);
       return `<div class="mv">${ctl(mv)}<div class="r">${by(`Move${i}_PP`) ? ctl(by(`Move${i}_PP`)) : ''}<div class="seg" role="group" aria-label="PP Ups">${[0, 1, 2, 3].map((x) => `<button data-up="Move${i}_PPUps" data-x="${x}" class="${u === x ? 'on' : ''}">${x}</button>`).join('')}</div></div></div>`; }).join('')
       + (E.PlusSupported(S.box, S.slot) ? `<h3>Plus / mastery flags</h3><p><button class="btn" type="button" data-plus="0">Set for current moves</button> <button class="btn" type="button" data-plus="1">Set all possible</button></p>` : '')
+      + (list(/^RelearnMove/).length ? `<label class="f chk" style="margin-top:14px"><input type="checkbox" id="arl" ${AUTO_RL ? 'checked' : ''}> Relearn all suggested moves</label>` : '')
       + `<h3>Relearn moves</h3><div class="fg">${list(/^RelearnMove/).map(ctl).join('')}</div>`;
   }
   if (S.tab === 'Cosmetic') {
@@ -327,6 +329,8 @@ function view() {
   $('ed').classList.add('open');
 }
 
+let AUTO_RL = false; try { AUTO_RL = localStorage.getItem('autoRelearn') === '1'; } catch {}
+E.SetAutoRelearn(AUTO_RL);
 function refresh() { S.props = call(() => J(E.GetProps(S.box, S.slot))).props ?? S.props; loadOpts(); loadGrid(); view(); }
 function edit(n, v) {
   if (LEGAL_DEP.test(n)) legalDirty = true;
@@ -349,7 +353,13 @@ function autoLegalise() {
 }
 function afterHistory(r) {
   if (!r.ok) return toast(r.error);
-  S.box = r.box; S.slot = r.slot; legalDirty = true; S.note = '';
+  legalDirty = true; S.note = '';
+  if (r.kind === 'save') {
+    TR.inv = TR.dex = null; trReload();
+    if (S.slot >= 0 && !S.slots[S.slot]?.empty) refresh(); else loadGrid();
+    return;
+  }
+  S.box = r.box; S.slot = r.slot;
   loadGrid();
   if (S.slots[r.slot]?.empty) return showEmpty();
   refresh();
@@ -367,6 +377,11 @@ $('ed').addEventListener('input', (e) => {
 });
 $('ed').addEventListener('change', async (e) => {
   const t = e.target;
+  if (t.id === 'arl') {
+    AUTO_RL = t.checked; E.SetAutoRelearn(AUTO_RL); try { localStorage.setItem('autoRelearn', AUTO_RL ? '1' : '0'); } catch {}
+    if (AUTO_RL) { const r = call(() => J(E.RelearnSuggested(S.box, S.slot))); r.ok ? (legalDirty = true, refresh()) : toast(r.error); }
+    return;
+  }
   if (t.id === 'nsp') return loadEncounters();
   if (t.dataset.p) return edit(t.dataset.p, t.type === 'checkbox' ? t.checked : t.value);
   if (t.id === 'impf' && t.files[0]) {
@@ -404,8 +419,181 @@ if ([...$('game').options].some((o) => o.value === 'ZA')) $('game').value = 'ZA'
 $('mk').onclick = () => setup(call(() => J(E.NewSave($('game').value, $('trainer').value))));
 $('dlsave').onclick = () => S.info ? download(E.ExportSave(), 'edited.sav') : toast('Open or create a save first.');
 $('theme').onclick = () => { const r = document.documentElement, d = (r.dataset.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light')) === 'dark'; r.dataset.theme = d ? 'light' : 'dark'; };
+// ---- Trainer window: trainer, items, Pokédex, adventure, dates ----
+const TR_TABS = ['Trainer', 'Items', 'Pokédex', 'Adventure', 'Dates', 'All fields'];
+const EPOCH2000 = Date.UTC(2000, 0, 1);
+const TR_RE = {
+  dates: /(Date|Year|Month|Day|SecondsTo|Epoch|Clock|Calendar|Birthday)/i,
+  money: /(Money|Coin|^BP$|Points|Miles|Currency|Cash|Dollar|Dust|Candy)/i,
+  adventure: /(Played|Badge|Starter|Hall|Story|Progress|Step|Wins|Gym|Rank|Champion|Elite|Battle|Trade|Rating)/i,
+  trainer: /^(OT|Trainer|TID|SID|Gender|Language|Country|Region|Console|Rival|Avatar|Game|Name)/i,
+};
+// Which tab a field is shown on (every field is also in "All fields").
+const trClass = (p) => {
+  const n = p.name;
+  if (p.type === 'DateTime' || p.type === 'DateOnly' || (TR_RE.dates.test(n) && !/Played/i.test(n))) return 'Dates';
+  if (TR_RE.money.test(n)) return 'Items';
+  if (TR_RE.adventure.test(n)) return 'Adventure';
+  if (TR_RE.trainer.test(n)) return 'Trainer';
+  return null;
+};
+
+function trCtl(p, showPath) {
+  const v = p.value ?? '', path = esc(p.path), tt = `title="${path}"`;
+  const lbl = esc(nice(p.name)) + (showPath && p.path !== p.name ? ` <span class="pth">${esc(p.path.slice(0, -p.name.length - 1))}</span>` : '');
+  if (/^SecondsTo(Start|Fame)$/.test(p.name))   // seconds since 2000-01-01, shown as a date
+    return `<label class="f" ${tt}>${lbl} (date)<input type="datetime-local" step="1" data-sp="${path}" data-secs="1" value="${new Date(EPOCH2000 + (+v || 0) * 1000).toISOString().slice(0, 19)}"></label>`;
+  if (p.type === 'Boolean') return `<label class="f chk" ${tt}><input type="checkbox" data-sp="${path}"${v === 'True' ? ' checked' : ''}>${lbl}</label>`;
+  if (p.options) return `<label class="f" ${tt}>${lbl}<select data-sp="${path}">${p.options.map((o) => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+  if (p.type === 'DateTime') return `<label class="f" ${tt}>${lbl}<input type="datetime-local" step="1" data-sp="${path}" value="${esc(v)}"></label>`;
+  if (p.type === 'DateOnly') return `<label class="f" ${tt}>${lbl}<input type="date" data-sp="${path}" value="${esc(v)}"></label>`;
+  if (NUM.test(p.type)) {
+    const lim = Number.isSafeInteger(+p.min) && Number.isSafeInteger(+p.max) ? ` min="${p.min}" max="${p.max}"` : '';
+    return `<label class="f" ${tt}>${lbl}<input type="number" step="1"${lim} data-sp="${path}" value="${esc(v)}"></label>`;
+  }
+  if (/^(Single|Double)$/.test(p.type)) return `<label class="f" ${tt}>${lbl}<input type="number" step="any" data-sp="${path}" value="${esc(v)}"></label>`;
+  return `<label class="f" ${tt}>${lbl}<input data-sp="${path}" value="${esc(v)}"></label>`;
+}
+
+function trFields(tab) {
+  const ps = TR.props.filter((p) => trClass(p) === tab);
+  return ps.length ? `<div class="fg">${ps.map((p) => trCtl(p)).join('')}</div>`
+    : `<p class="hint">No ${tab.toLowerCase()} fields were found for this game. Try “All fields”.</p>`;
+}
+
+function trItems() {
+  const money = TR.props.filter((p) => trClass(p) === 'Items');
+  let h = money.length ? `<h3 style="margin-top:0">Money and currencies</h3><div class="fg">${money.map((p) => trCtl(p)).join('')}</div>` : '';
+  const inv = TR.inv;
+  if (!inv?.ok) return h + `<p class="bad">${esc(inv?.error ?? 'Items unavailable.')}</p>`;
+  if (!inv.supported) return h + '<p class="hint">Item editing isn’t available for this game yet.</p>';
+  const nm = (i) => N.items[i] || '#' + i;
+  const real = (i) => i > 0 && N.items[i] && !/^(\?\?\?|\()/.test(N.items[i]);
+  h += '<h3>Pouches</h3>' + inv.pouches.map((p) => {
+    const ids = (p.legal ?? N.items.map((_, i) => i)).filter(real).sort((a, b) => N.items[a].localeCompare(N.items[b]));
+    const rows = p.items.map((it) => `<tr><td>${esc(nm(it.item))}</td><td><input type="number" min="0" max="${p.max}" step="1" value="${it.count}" data-ic="${p.index}:${it.slot}" aria-label="Count"></td><td><button class="btn" data-irm="${p.index}:${it.slot}" aria-label="Remove ${esc(nm(it.item))}">✕</button></td></tr>`).join('');
+    const body = p.editable
+      ? `${rows ? `<table>${rows}</table>` : '<p class="hint">Empty.</p>'}`
+        + `<div class="tradd"><select id="ia${p.index}" aria-label="Item to add">${ids.map((i) => `<option value="${i}">${esc(N.items[i])}</option>`).join('')}</select><input type="number" id="ic${p.index}" min="1" max="${p.max}" value="${Math.min(p.max, 99)}" aria-label="Amount"><button class="btn pri" data-iadd="${p.index}">Add</button></div>`
+        + `<div class="tradd"><button class="btn" data-imax="${p.index}">Max counts</button><button class="btn" data-iall="${p.index}">Add all legal</button><button class="btn" data-iclr="${p.index}">Clear pouch</button></div>`
+      : '<p class="hint">This pouch can’t be edited.</p>';
+    return `<details data-pouch="${p.index}"${TR.open.has(p.index) ? ' open' : ''}><summary>${esc(p.name)} <small class="hint">${p.items.length} of ${p.size} slots</small></summary>${body}</details>`;
+  }).join('');
+  return h;
+}
+
+function trDex() {
+  const d = TR.dex;
+  if (!d?.ok) return `<p class="bad">${esc(d?.error ?? 'Pokédex unavailable.')}</p>`;
+  if (!d.supported) return '<p class="hint">Pokédex editing isn’t available for this game yet.</p>';
+  const seen = new Set(d.seen), caught = new Set(d.caught), rows = [];
+  for (let i = 1; i <= d.max; i++) {
+    const n = N.species[i]; if (!n) continue;
+    rows.push(`<div class="dxr" data-q="${esc(`${i} ${n}`.toLowerCase())}"><span>#${i} ${esc(n)}</span><span class="dxc"><label><input type="checkbox" data-dx="${i}" data-k="s"${seen.has(i) ? ' checked' : ''}> Seen</label><label><input type="checkbox" data-dx="${i}" data-k="c"${caught.has(i) ? ' checked' : ''}> Caught</label></span></div>`);
+  }
+  return `<div class="trdxh"><b id="dxn">${seen.size} seen · ${caught.size} caught</b><span class="sp"></span><button class="btn" data-dxall="s">Mark all seen</button><button class="btn" data-dxall="c">Mark all caught</button><button class="btn" data-dxall="n">Clear all</button></div>`
+    + `<input id="trq" type="search" placeholder="Filter by name or number" style="width:100%;margin:10px 0"><div>${rows.join('')}</div>`;
+}
+
+function trBody() {
+  if (TR.tab === 'Items') { TR.inv ??= call(() => J(E.GetInventory())); return trItems(); }
+  if (TR.tab === 'Pokédex') { TR.dex ??= call(() => J(E.GetDex())); return trDex(); }
+  if (TR.tab === 'All fields') return `<input id="trq" type="search" placeholder="Filter fields (name or path)" style="width:100%;margin-bottom:10px"><div class="fg all">${TR.props.map((p) => trCtl(p, true)).join('')}</div>`;
+  return trFields(TR.tab);
+}
+
+function trFilter() {
+  const inp = $('trq'); if (!inp) return; const q = inp.value.toLowerCase();
+  $('trm').querySelectorAll('.fg.all > label, .dxr').forEach((l) => { l.hidden = !!q && !(l.dataset.q ?? `${l.textContent} ${l.title}`).toLowerCase().includes(q); });
+}
+
+function trRender(reset) {
+  const dlg = $('trm'); if (!dlg) return;
+  const keep = reset ? 0 : dlg.querySelector('#trb')?.scrollTop ?? 0;
+  const tabs = TR_TABS.map((t) => `<button role="tab" class="${t === TR.tab ? 'on' : ''}" data-trt="${t}">${t}</button>`).join('');
+  dlg.innerHTML = `<div class="trw"><div class="trh"><h3>Trainer and save data</h3><div class="tabs" role="tablist">${tabs}</div></div><div class="trb" id="trb">${trBody()}</div>`
+    + `<div class="trf"><span class="hint" style="margin:0">Changes apply immediately. Undo them with ↶.</span><span class="sp"></span><button class="btn pri" data-trclose="1">Done</button></div></div>`;
+  dlg.querySelector('#trb').scrollTop = keep;
+  trFilter();
+}
+
+function trReload() {
+  const dlg = $('trm'); if (!dlg?.open) return;
+  const r = call(() => J(E.GetSaveProps())); if (r.ok) TR.props = r.props;
+  trRender();
+}
+
+const trOp = (fn) => { const r = call(() => J(fn())); if (!r.ok) toast(r.error); TR.inv = null; trRender(); updateHist(); };
+
+function trSet(el) {
+  const path = el.dataset.sp;
+  let v = el.type === 'checkbox' ? String(el.checked) : el.value;
+  if (el.dataset.secs) { const s = Math.round((Date.parse(el.value + 'Z') - EPOCH2000) / 1000); if (!Number.isFinite(s)) return trRender(); v = String(s); }
+  const r = call(() => J(E.SetSaveProp(path, v)));
+  if (!r.ok) { toast(r.error); const p = TR.props.find((x) => x.path === path); if (p) el.value = p.value ?? ''; return trRender(); }
+  const p = TR.props.find((x) => x.path === path); if (p) p.value = r.value;
+  if (el.type === 'number' && r.value != null) el.value = r.value;   // the save may have clamped it
+  updateHist();
+}
+
+function trOpen() {
+  if (!S.info) return toast('Open or create a save first.');
+  let dlg = $('trm');
+  if (!dlg) {
+    dlg = document.createElement('dialog'); dlg.id = 'trm'; document.body.appendChild(dlg);
+    dlg.addEventListener('close', () => { if (S.slot >= 0 && S.props.length) refresh(); });
+    dlg.addEventListener('toggle', (e) => {
+      const d = e.target.closest?.('details[data-pouch]'); if (!d) return;
+      d.open ? TR.open.add(+d.dataset.pouch) : TR.open.delete(+d.dataset.pouch);
+    }, true);
+    dlg.addEventListener('input', (e) => { if (e.target.id === 'trq') trFilter(); });
+    dlg.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.dataset.sp) return trSet(t);
+      if (t.dataset.ic) { const [pi, sl] = t.dataset.ic.split(':').map(Number); return trOp(() => E.InvSetCount(pi, sl, Math.trunc(+t.value) || 0)); }
+      if (t.dataset.dx) {
+        const row = t.closest('.dxr'), s = row.querySelector('[data-k=s]'), c = row.querySelector('[data-k=c]');
+        if (t.dataset.k === 'c' && c.checked) s.checked = true;
+        if (t.dataset.k === 's' && !s.checked) c.checked = false;
+        const r = call(() => J(E.SetDexEntry(+t.dataset.dx, s.checked, c.checked)));
+        TR.dex = null;
+        if (!r.ok) { toast(r.error); return trRender(); }
+        $('dxn').textContent = `${dlg.querySelectorAll('[data-k=s]:checked').length} seen · ${dlg.querySelectorAll('[data-k=c]:checked').length} caught`;
+        updateHist();
+      }
+    });
+    dlg.addEventListener('click', (e) => {
+      if (e.target === dlg) return dlg.close();
+      const b = e.target.closest('button'); if (!b) return;
+      const d = b.dataset;
+      if (d.trclose) return dlg.close();
+      if (d.trt) { TR.tab = d.trt; return trRender(true); }
+      const pair = (s) => s.split(':').map(Number);
+      if (d.irm) { const [pi, sl] = pair(d.irm); return trOp(() => E.InvRemove(pi, sl)); }
+      if (d.iadd) { const pi = +d.iadd; return trOp(() => E.InvAdd(pi, +$(`ia${pi}`).value, Math.trunc(+$(`ic${pi}`).value) || 1)); }
+      if (d.imax) return trOp(() => E.InvMax(+d.imax));
+      if (d.iall) return trOp(() => E.InvAddAllLegal(+d.iall));
+      if (d.iclr) return trOp(() => E.InvClear(+d.iclr));
+      if (d.dxall) {
+        const seen = d.dxall !== 'n', caught = d.dxall === 'c';
+        const r = call(() => J(E.SetDexAll(seen, caught)));
+        if (!r.ok) toast(r.error);
+        TR.dex = null; trRender(); updateHist();
+      }
+    });
+  }
+  dlg.innerHTML = '<div class="trw"><div class="trh"><h3>Trainer and save data</h3></div><div class="trb"><p class="hint" style="margin:0">Reading save data…</p></div></div>';
+  dlg.showModal();
+  setTimeout(() => {   // reading every field can take a moment
+    const r = call(() => J(E.GetSaveProps()));
+    if (!r.ok) { dlg.close(); return toast(r.error); }
+    TR.props = r.props; TR.inv = TR.dex = null; trRender(true);
+  }, 30);
+}
+
 // ---- top bar: File menu and undo/redo ----
 {
+  $('trbtn').onclick = trOpen;
   const fb = $('filebtn'), fm = $('filemenu');
   const close = () => { fm.hidden = true; fb.setAttribute('aria-expanded', 'false'); };
   fb.onclick = (e) => { e.stopPropagation(); fm.hidden = !fm.hidden; fb.setAttribute('aria-expanded', String(!fm.hidden)); };
