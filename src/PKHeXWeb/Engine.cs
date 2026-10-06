@@ -529,6 +529,35 @@ public static partial class Engine
         catch (Exception e) { return Err(e.Message); }
     }
 
+    // Diagnostic: shows exactly what the legality check says about one move placed alone in slot 1.
+    [JSExport]
+    public static string MoveDebug(int box, int slot, int move)
+    {
+        try
+        {
+            var pk = Slot(box, slot);
+            if (pk is null) return Err("No Pokémon in that slot.");
+            var c = pk.Clone();
+            c.Move1 = (ushort)move; c.Move2 = 0; c.Move3 = 0; c.Move4 = 0;
+            Call(c, "HealPP");
+            bool plus = ApplyPlusFlags(c, false);
+            c.RefreshChecksum();
+            var la = new LegalityAnalysis(c);
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"move id {move}; plus flags applied: {plus}; MaxMoveID: {Prop(Sav!, "MaxMoveID")}");
+            sb.AppendLine($"valid overall: {la.Valid}; encounter: {(Prop(la, "EncounterMatch") is { } em ? EncName((IEncounterable)em) : "none")}");
+            var info = Prop(la, "Info");
+            var mvObj = info is null ? null : Prop(info, "Moves");
+            sb.AppendLine($"Info.Moves type: {mvObj?.GetType().FullName ?? "null"}");
+            int i = 0;
+            foreach (var m in Items(mvObj)) sb.AppendLine($"  slot {++i}: {m} | Valid={Prop(m!, "Valid")}");
+            sb.AppendLine("--- report ---");
+            sb.AppendLine(la.Report());
+            return J(new { ok = true, text = sb.ToString() });
+        }
+        catch (Exception e) { return Err(e.ToString()); }
+    }
+
     static void FixRelearn(PKM c)
     {
         var rel = LegalRelearn(c);
@@ -1268,6 +1297,13 @@ public static partial class Engine
             }
 
             var legal = LegalMoves(pk);
+            if (legal is null)
+            {
+                // The legality probe gave no usable list: offer every move rather than locking the fields.
+                var all = NameList("Move", "movelist");
+                int mx = Prop(Sav!, "MaxMoveID") is { } mm2 ? Convert.ToInt32(mm2) : all.Length - 1;
+                legal = Enumerable.Range(1, Math.Max(1, Math.Min(mx, all.Length - 1))).Where(i => !string.IsNullOrWhiteSpace(all[i]) && all[i] != "???").ToHashSet();
+            }
             if (legal is not null)
             {
                 var mvNames = NameList("Move", "movelist");
