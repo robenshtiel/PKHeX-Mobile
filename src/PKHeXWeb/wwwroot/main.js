@@ -16,10 +16,10 @@ const SPR = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/po
 const img = (id, shiny) => id ? `<img src="${SPR}${shiny ? 'shiny/' : ''}${id}.png" alt="" loading="lazy" onerror="this.remove()">` : '';
 const optCache = {};
 const listOpts = (k) => (optCache[k] ??= N[k].map((n, i) => `<option value="${i}">${esc(n || '—')}</option>`).join(''));
-const LISTS = [[/^Species$/, 'species'], [/^(Move[1-4]|RelearnMove[1-4])$/, 'moves'], [/^(HeldItem|Item)$/, 'items'], [/^Ability$/, 'abilities'], [/^(Nature|StatNature)$/, 'natures']];
+const LISTS = [[/^Species$/, 'species'], [/^(Move[1-4]|RelearnMove[1-4]|AlphaMove)$/, 'moves'], [/^(HeldItem|Item)$/, 'items'], [/^Ability$/, 'abilities'], [/^(Nature|StatNature)$/, 'natures']];
 const NUM = /^(Byte|SByte|U?Int(16|32|64))$/;
 const TAB = {
-  Main: /^(Species|Nickname|IsNicknamed|IsShiny|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
+  Main: /^(Species|Nickname|IsNicknamed|IsShiny|IsAlpha|AlphaMove|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
   Moves: /^(Move[1-4]|RelearnMove[1-4])(_PP|_PPUps)?$/,
   Cosmetic: /^(Contest|Marking|Ribbon|AffixedRibbon|HasBattle|HasContest)/,
   Met: /^(Ball|Version|Fateful|Met|Egg)/,
@@ -79,7 +79,7 @@ function showEmpty() {
   ed.innerHTML = S.box < 0
     ? '<div class="top"><div><h2>Empty party slot</h2><small>Adding to the party isn’t supported yet. Use a box.</small></div><button class="btn cl" id="cl">Close</button></div>'
     : `<div class="top"><div><h2>Empty slot</h2><small>Box ${S.box + 1}, slot ${S.slot + 1}</small></div><button class="btn cl" id="cl">Close</button></div>
-<div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label><label class="f chk"><input type="checkbox" id="nsh">Shiny</label></div>
+<div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label><label class="f chk"><input type="checkbox" id="nsh">Shiny</label>${E.AlphaSupported() ? '<label class="f chk"><input type="checkbox" id="nal">Alpha</label>' : ''}</div>
 <p><button class="btn pri" id="create">Create Pokémon</button></p>
 <label class="f">Or import a Pokémon file<input type="file" id="impf"></label>`;
   if ($('nsp')) { $('nsp').value = 25; loadEncounters(); }
@@ -182,7 +182,7 @@ function view() {
   const list = (re) => P.filter((p) => re.test(p.name));
   let h = '';
   if (S.tab === 'Main') {
-    const ORDER = ['Species', 'Form', 'Nickname', 'IsNicknamed', 'Gender', 'IsShiny', 'IsEgg', 'CurrentLevel', 'EXP', 'Nature', 'StatNature', 'Ability', 'AbilityNumber', 'HeldItem', 'CurrentFriendship', 'HeightScalar', 'WeightScalar', 'Scale', 'PID', 'EncryptionConstant'];
+    const ORDER = ['Species', 'Form', 'Nickname', 'IsNicknamed', 'Gender', 'IsShiny', 'IsAlpha', 'AlphaMove', 'IsEgg', 'CurrentLevel', 'EXP', 'Nature', 'StatNature', 'Ability', 'AbilityNumber', 'HeldItem', 'CurrentFriendship', 'HeightScalar', 'WeightScalar', 'Scale', 'PID', 'EncryptionConstant'];
     const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
     h = `<div class="fg">${list(TAB.Main).sort((a, b) => rank(a.name) - rank(b.name)).map(ctl).join('')}</div>`;
   }
@@ -196,6 +196,7 @@ function view() {
   if (S.tab === 'Moves') {
     h = [1, 2, 3, 4].map((i) => { const mv = by('Move' + i); if (!mv) return ''; const u = +(by(`Move${i}_PPUps`)?.value ?? 0);
       return `<div class="mv">${ctl(mv)}<div class="r">${by(`Move${i}_PP`) ? ctl(by(`Move${i}_PP`)) : ''}<div class="seg" role="group" aria-label="PP Ups">${[0, 1, 2, 3].map((x) => `<button data-up="Move${i}_PPUps" data-x="${x}" class="${u === x ? 'on' : ''}">${x}</button>`).join('')}</div></div></div>`; }).join('')
+      + (E.PlusSupported(S.box, S.slot) ? `<h3>Plus / mastery flags</h3><p><button class="btn" type="button" data-plus="0">Set for current moves</button> <button class="btn" type="button" data-plus="1">Set all possible</button></p>` : '')
       + `<h3>Relearn moves</h3><div class="fg">${list(/^RelearnMove/).map(ctl).join('')}</div>`;
   }
   if (S.tab === 'Cosmetic') {
@@ -263,13 +264,22 @@ $('ed').addEventListener('change', async (e) => {
 $('ed').addEventListener('click', (e) => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.id === 'cl') $('ed').classList.remove('open');
-  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked))); r.ok ? pick(S.slot) : toast(r.error); }
+  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked, !!$('nal')?.checked))); r.ok ? pick(S.slot) : toast(r.error); }
   else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, 'pokemon.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
+  else if (t.dataset.plus) { const r = call(() => J(E.ApplyPlus(S.box, S.slot, t.dataset.plus === '1'))); r.ok ? (legalDirty = true, refresh()) : toast(r.error); }
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
   else if (t.dataset.max) { const v = maxFor(t.dataset.max); if (v != null) edit(t.dataset.max, v); }
   else if (t.id === 'rbopen') openRibbons();
 });
+{
+  const lab = document.createElement('label'); lab.className = 'btn'; lab.title = 'Automatically set Plus / mastery flags when species, level or moves change';
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'autolegal';
+  let on = true; try { on = localStorage.getItem('autoLegal') !== '0'; } catch {}
+  cb.checked = on; E.SetAutoLegal(on);
+  cb.onchange = () => { E.SetAutoLegal(cb.checked); try { localStorage.setItem('autoLegal', cb.checked ? '1' : '0'); } catch {} };
+  lab.append(cb, ' Auto legality'); $('theme').before(lab);
+}
 $('load').onclick = () => $('file').click();
 $('file').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; const b = new Uint8Array(await f.arrayBuffer()); setup(call(() => J(E.LoadSave(b, f.name)))); e.target.value = ''; };
 $('newbtn').onclick = () => { $('newp').hidden = !$('newp').hidden; };
