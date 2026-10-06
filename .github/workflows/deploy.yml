@@ -1,0 +1,31 @@
+name: Build and deploy
+on:
+  push: { branches: [main] }
+  schedule: [{ cron: '0 6 * * 1' }]
+  workflow_dispatch: {}
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: pages, cancel-in-progress: true }
+env:
+  PKHEX_REF: master
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch PKHeX from kwsch/PKHeX
+        run: |
+          git clone https://github.com/kwsch/PKHeX.git external/PKHeX
+          git -C external/PKHeX checkout "$PKHEX_REF"
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 10.0.x }
+      - run: dotnet publish src/PkhexWeb -c Release -o out
+      - run: touch out/wwwroot/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: out/wwwroot }
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: '${{ steps.d.outputs.page_url }}' }
+    steps:
+      - id: d
+        uses: actions/deploy-pages@v4
