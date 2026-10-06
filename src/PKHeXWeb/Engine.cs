@@ -190,7 +190,7 @@ public static partial class Engine
         try
         {
             if (!Enum.TryParse<GameVersion>(game, out var v)) return Err("Unknown game: " + game);
-            Sav = MakeBlank(v, string.IsNullOrWhiteSpace(trainer) ? "PKHeX" : trainer);
+            Sav = MakeBlank(v, string.IsNullOrWhiteSpace(trainer) ? "Rob" : trainer);
             return Info();
         }
         catch (Exception e) { return Err(e.Message); }
@@ -608,6 +608,38 @@ public static partial class Engine
         return res.Any(x => x > 0) ? res.ToArray() : [];
     }
 
+    // Relearn moves PKHeX suggests for the encounter (GetSuggestedRelearn* helpers); empty if none can be found.
+    static HashSet<int> SuggestedRelearn(LegalityAnalysis la)
+    {
+        var set = new HashSet<int>();
+        foreach (var t in typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsAbstract && t.IsSealed && t.IsPublic))
+        {
+            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (!m.Name.StartsWith("GetSuggestedRelearn") || m.IsGenericMethodDefinition) continue;
+                var ps = m.GetParameters();
+                if (ps.Length == 0 || !ps[0].ParameterType.IsAssignableFrom(typeof(LegalityAnalysis))) continue;
+                var args = new object?[ps.Length]; args[0] = la;
+                bool skip = false;
+                for (int i = 1; i < ps.Length; i++)
+                {
+                    if (ps[i].HasDefaultValue) args[i] = ps[i].DefaultValue;
+                    else { skip = true; break; }
+                }
+                if (skip) continue;
+                try
+                {
+                    var r = m.Invoke(null, args);
+                    if (r is ReadOnlyMemory<ushort> mem) foreach (var x in mem.ToArray()) set.Add(x);
+                    else if (r is System.Collections.IEnumerable en) foreach (var x in en) set.Add(Convert.ToInt32(x));
+                }
+                catch { }
+            }
+        }
+        set.Remove(0);
+        return set;
+    }
+
     // True if this move, placed alone in relearn slot idx of this exact Pokémon, passes the relearn check.
     static bool RelearnSlotValid(PKM pk, int move, int idx)
     {
@@ -639,8 +671,10 @@ public static partial class Engine
         if (expected.Length > 0)
         {
             // The encounter dictates the exact relearn moves, slot by slot.
+            // Always list them: a required move must be selectable even if the single-slot probe rejects it
+            // (the probe zeroes the other slots, which can trip the "expected moves" check).
             for (int i = 0; i < 4 && i < expected.Length; i++)
-                if (expected[i] > 0 && RelearnSlotValid(pk, expected[i], i)) sets[i].Add(expected[i]);
+                if (expected[i] > 0) sets[i].Add(expected[i]);
         }
         else
         {
@@ -654,6 +688,8 @@ public static partial class Engine
             }
             var ok = new HashSet<int>();
             foreach (var m in cand) { try { if (RelearnSlotValid(pk, m, 0)) ok.Add(m); } catch { } }
+            // Moves PKHeX itself says the encounter requires (e.g. egg moves) are always offered.
+            ok.UnionWith(SuggestedRelearn(la));
             foreach (var s in sets) s.UnionWith(ok);
         }
         if (RelearnCache.Count > 64) RelearnCache.Clear();
@@ -803,9 +839,62 @@ public static partial class Engine
                     d[RelearnNames[i]] = l;
                 }
             }
+
+            if (FindProp(pk.GetType(), "HeldItem") is not null)
+            {
+                var itNames = NameList("Item", "itemlist");
+                var curI = Convert.ToInt32(Prop(pk, "HeldItem") ?? 0);
+                var cacheKey = pk.GetType().Name + "|" + pk.Format;
+                if (!HeldCache.TryGetValue(cacheKey, out var allowed))
+                {
+                allowed = new List<Opt>();
+                for (int id = 1; id < itNames.Length; id++)
+                {
+                    var nm = itNames[id];
+                    if (string.IsNullOrWhiteSpace(nm) || nm == "???" || nm.StartsWith("(")) continue;
+                    if (HeldItemAllowed(pk, id)) allowed.Add(new Opt(id, nm));
+                }
+                allowed = allowed.OrderBy(o => o.t, StringComparer.Ordinal).ToList();
+                HeldCache[cacheKey] = allowed;
+                }
+                if (allowed.Count > 0)
+                {
+                    allowed = allowed.ToList();
+                    if (curI != 0 && !allowed.Any(o => o.v == curI)) allowed.Insert(0, new Opt(curI, (itNames.ElementAtOrDefault(curI) ?? ("#" + curI)) + " (not legal)"));
+                    allowed.Insert(0, new Opt(0, "(None)"));
+                    d["HeldItem"] = allowed;
+                }
+            }
             return J(new { ok = true, opts = d });
         }
         catch (Exception e) { return Err(e.Message); }
+    }
+
+    static readonly Dictionary<string, List<Opt>> HeldCache = new();
+
+    // Asks PKHeX whether this item can be held in this Pokémon's generation/context.
+    static bool HeldItemAllowed(PKM pk, int item)
+    {
+        foreach (var t in typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsAbstract && t.IsSealed && t.IsPublic && t.Name == "ItemRestrictions"))
+        {
+            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (m.Name != "IsHeldItemAllowed") continue;
+                var ps = m.GetParameters();
+                if (ps.Length != 2) continue;
+                try
+                {
+                    object? a1;
+                    if (ps[1].ParameterType == typeof(int) || ps[1].ParameterType == typeof(byte)) a1 = Convert.ChangeType(pk.Format, ps[1].ParameterType);
+                    else if (ps[1].ParameterType.IsEnum) a1 = Enum.ToObject(ps[1].ParameterType, Convert.ToInt32(Prop(pk, "Context") ?? 0));
+                    else continue;
+                    var a0 = Convert.ChangeType(item, ps[0].ParameterType);
+                    if (m.Invoke(null, [a0, a1]) is bool b) return b;
+                }
+                catch { }
+            }
+        }
+        return true; // no checker found: leave the item in rather than hide everything
     }
 
     // ---------- legal generation from the encounter database ----------
