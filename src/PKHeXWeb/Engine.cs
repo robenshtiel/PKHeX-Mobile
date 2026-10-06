@@ -577,6 +577,146 @@ public static partial class Engine
         return set;
     }
 
+    // ---------- legal relearn moves and ribbons ----------
+
+    static readonly string[] RelearnNames = ["RelearnMove1", "RelearnMove2", "RelearnMove3", "RelearnMove4"];
+
+    // Enumerates arrays, lists and Memory<T>/ReadOnlyMemory<T> values (which are not IEnumerable) alike.
+    static List<object?> Items(object? o)
+    {
+        var res = new List<object?>();
+        if (o is null) return res;
+        if (o is System.Collections.IEnumerable e && o is not string) { foreach (var x in e) res.Add(x); return res; }
+        if (o.GetType().GetMethod("ToArray", Type.EmptyTypes)?.Invoke(o, null) is System.Collections.IEnumerable a)
+            foreach (var x in a) res.Add(x);
+        return res;
+    }
+
+    // Relearn moves the matched encounter itself dictates (events and similar); empty when it dictates none.
+    static int[] ExpectedRelearn(LegalityAnalysis la)
+    {
+        var res = new List<int>();
+        try
+        {
+            var r = Prop(la, "EncounterMatch") is { } enc ? Prop(enc, "Relearn") : null;
+            if (r is null) return [];
+            foreach (var n in new[] { "Move1", "Move2", "Move3", "Move4" })
+                if (FindProp(r.GetType(), n) is not null) res.Add(Convert.ToInt32(Prop(r, n) ?? 0));
+            if (res.Count == 0) foreach (var x in Items(r)) res.Add(Convert.ToInt32(x ?? 0));
+        }
+        catch { return []; }
+        return res.Any(x => x > 0) ? res.ToArray() : [];
+    }
+
+    // True if this move, placed alone in relearn slot idx of this exact Pokémon, passes the relearn check.
+    static bool RelearnSlotValid(PKM pk, int move, int idx)
+    {
+        var c = pk.Clone();
+        for (int i = 0; i < 4; i++) TrySet(c, [RelearnNames[i]], i == idx ? move : 0);
+        c.RefreshChecksum();
+        var la = new LegalityAnalysis(c);
+        if (Prop(la, "Info") is { } info)
+        {
+            var rl = Items(Prop(info, "Relearn"));
+            if (idx < rl.Count && rl[idx] is { } item && Prop(item, "Valid") is bool ok) return ok;
+        }
+        return !la.Report().Split('\n').Any(l => l.StartsWith("Invalid") && l.Contains("Relearn") && l.Contains((idx + 1).ToString()));
+    }
+
+    static readonly Dictionary<string, HashSet<int>[]> RelearnCache = new();
+
+    // One set of legal moves per relearn slot; every set is empty when the Pokémon's encounter allows no relearn moves.
+    // Cached like LegalMoves (the key leaves out the current moves).
+    static HashSet<int>[]? LegalRelearn(PKM pk)
+    {
+        if (FindProp(pk.GetType(), "RelearnMove1") is null) return null;
+        var key = MoveKey(pk);
+        if (RelearnCache.TryGetValue(key, out var hit)) return hit;
+
+        var la = new LegalityAnalysis(pk);
+        var expected = ExpectedRelearn(la);
+        var sets = new[] { new HashSet<int>(), new HashSet<int>(), new HashSet<int>(), new HashSet<int>() };
+        if (expected.Length > 0)
+        {
+            // The encounter dictates the exact relearn moves, slot by slot.
+            for (int i = 0; i < 4 && i < expected.Length; i++)
+                if (expected[i] > 0 && RelearnSlotValid(pk, expected[i], i)) sets[i].Add(expected[i]);
+        }
+        else
+        {
+            var pool = SuggestedMoves(pk);
+            IEnumerable<int> cand;
+            if (pool is not null) cand = pool.ToList();
+            else
+            {
+                int max = Prop(Sav!, "MaxMoveID") is { } mm ? Convert.ToInt32(mm) : NameList("Move", "movelist").Length - 1;
+                cand = Enumerable.Range(1, Math.Max(1, max));
+            }
+            var ok = new HashSet<int>();
+            foreach (var m in cand) { try { if (RelearnSlotValid(pk, m, 0)) ok.Add(m); } catch { } }
+            foreach (var s in sets) s.UnionWith(ok);
+        }
+        if (RelearnCache.Count > 64) RelearnCache.Clear();
+        RelearnCache[key] = sets;
+        return sets;
+    }
+
+    // Number of ribbon problems PKHeX reports (invalid and missing ribbons are separate entries).
+    static int RibbonProblems(LegalityAnalysis la)
+    {
+        if (Prop(la, "Results") is System.Collections.IEnumerable rs)
+        {
+            int n = 0; bool any = false;
+            foreach (var r in rs)
+            {
+                if (Prop(r, "Identifier")?.ToString() != "Ribbon") continue;
+                any = true;
+                if (Prop(r, "Valid") is false) n++;
+            }
+            if (any) return n;
+        }
+        return la.Report().Split('\n').Count(l => l.StartsWith("Invalid") && l.Contains("Ribbon"));
+    }
+
+    static readonly Dictionary<string, List<string>> RibbonCache = new();
+
+    // Ribbons and marks that PKHeX accepts on this Pokémon. Each one is tried alone on a ribbon-free copy,
+    // so the cost is one legality check per ribbon the first time; results are cached per encounter data.
+    [JSExport]
+    public static string GetLegalRibbons(int box, int slot)
+    {
+        try
+        {
+            var pk = Slot(box, slot);
+            if (pk is null) return Err("No Pokémon in that slot.");
+            var all = Editable(pk).Where(p => p.PropertyType == typeof(bool) && p.Name.StartsWith("Ribbon")).Select(p => p.Name).ToList();
+            var key = pk.GetType().Name + "|" + MoveKey(pk);
+            if (!RibbonCache.TryGetValue(key, out var legal))
+            {
+                legal = [];
+                var baseline = pk.Clone();
+                foreach (var n in all) TrySet(baseline, [n], false);
+                baseline.RefreshChecksum();
+                int baseProblems = RibbonProblems(new LegalityAnalysis(baseline));
+                foreach (var n in all)
+                {
+                    try
+                    {
+                        var c = baseline.Clone();
+                        TrySet(c, [n], true);
+                        c.RefreshChecksum();
+                        if (RibbonProblems(new LegalityAnalysis(c)) <= baseProblems) legal.Add(n);
+                    }
+                    catch { }
+                }
+                if (RibbonCache.Count > 32) RibbonCache.Clear();
+                RibbonCache[key] = legal;
+            }
+            return J(new { ok = true, legal, all });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
     static bool AbilityOk(PKM pk, int slotIndex)
     {
         var c = pk.Clone();
@@ -646,6 +786,21 @@ public static partial class Engine
                     if (cur != 0 && !legal.Contains(cur)) l.Insert(0, new Opt(cur, (mvNames.ElementAtOrDefault(cur) ?? ("#" + cur)) + " (not legal)"));
                     l.Insert(0, new Opt(0, "(None)"));
                     d[n] = l;
+                }
+            }
+
+            var rel = LegalRelearn(pk);
+            if (rel is not null)
+            {
+                var mvNames = NameList("Move", "movelist");
+                for (int i = 0; i < 4; i++)
+                {
+                    if (FindProp(pk.GetType(), RelearnNames[i]) is null) continue;
+                    var cur = Convert.ToInt32(Prop(pk, RelearnNames[i]) ?? 0);
+                    var l = rel[i].Select(m => new Opt(m, mvNames.ElementAtOrDefault(m) ?? ("#" + m))).OrderBy(o => o.t, StringComparer.Ordinal).ToList();
+                    if (cur != 0 && !rel[i].Contains(cur)) l.Insert(0, new Opt(cur, (mvNames.ElementAtOrDefault(cur) ?? ("#" + cur)) + " (not legal)"));
+                    l.Insert(0, new Opt(0, "(None)"));
+                    d[RelearnNames[i]] = l;
                 }
             }
             return J(new { ok = true, opts = d });
