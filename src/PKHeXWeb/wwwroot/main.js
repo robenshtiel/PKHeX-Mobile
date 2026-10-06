@@ -66,11 +66,21 @@ function showEmpty() {
   ed.innerHTML = S.box < 0
     ? '<div class="top"><div><h2>Empty party slot</h2><small>Adding to the party isn’t supported yet. Use a box.</small></div><button class="btn cl" id="cl">Close</button></div>'
     : `<div class="top"><div><h2>Empty slot</h2><small>Box ${S.box + 1}, slot ${S.slot + 1}</small></div><button class="btn cl" id="cl">Close</button></div>
-<div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label></div>
+<div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label></div>
 <p><button class="btn pri" id="create">Create Pokémon</button></p>
 <label class="f">Or import a Pokémon file<input type="file" id="impf"></label>`;
-  if ($('nsp')) $('nsp').value = 25;
+  if ($('nsp')) { $('nsp').value = 25; loadEncounters(); }
   ed.classList.add('open');
+}
+
+function loadEncounters() {
+  const sel = $('nenc'); if (!sel) return;
+  const r = call(() => J(E.ListEncounters(+$('nsp').value)));
+  sel.innerHTML = '<option value="-1">Automatic (first legal)</option>' + (r.encounters ?? []).map((e) => {
+    const lv = e.min ? (e.min === e.max ? ` Lv ${e.min}` : ` Lv ${e.min}-${e.max}`) : '';
+    return `<option value="${e.i}">${esc(nice(e.kind))}: ${esc(e.name)}${lv}</option>`;
+  }).join('');
+  if (!r.ok) toast(r.error);
 }
 
 function view() {
@@ -125,6 +135,7 @@ $('ed').addEventListener('input', (e) => {
 });
 $('ed').addEventListener('change', async (e) => {
   const t = e.target;
+  if (t.id === 'nsp') return loadEncounters();
   if (t.dataset.p) return edit(t.dataset.p, t.type === 'checkbox' ? t.checked : t.value);
   if (t.id === 'impf' && t.files[0]) {
     const b = new Uint8Array(await t.files[0].arrayBuffer());
@@ -135,7 +146,7 @@ $('ed').addEventListener('change', async (e) => {
 $('ed').addEventListener('click', (e) => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.id === 'cl') $('ed').classList.remove('open');
-  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value))); r.ok ? pick(S.slot) : toast(r.error); }
+  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value))); r.ok ? pick(S.slot) : toast(r.error); }
   else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, 'pokemon.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
