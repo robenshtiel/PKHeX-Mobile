@@ -25,11 +25,49 @@ public static partial class Engine
         return Sav.GetBoxSlotAtIndex(box, slot);
     }
 
-    static void Store(PKM pk, int box, int slot)
+    // Raw write to the save, without touching the undo history.
+    static void Put(PKM pk, int box, int slot)
     {
         if (box < 0) Sav!.SetPartySlotAtIndex(pk, slot);
         else Sav!.SetBoxSlotAtIndex(pk, box, slot);
     }
+
+    // Every edit goes through here, so each one is recorded (before/after copy of the slot) for undo/redo.
+    static void Store(PKM pk, int box, int slot)
+    {
+        var before = Slot(box, slot);
+        Put(pk, box, slot);
+        if (before is null) return;
+        UndoStack.Add(new HistEdit(box, slot, before.Clone(), pk.Clone()));
+        if (UndoStack.Count > 200) UndoStack.RemoveAt(0);
+        RedoStack.Clear();
+    }
+
+    record HistEdit(int Box, int Slot, PKM Before, PKM After);
+    static readonly List<HistEdit> UndoStack = new(), RedoStack = new();
+
+    static string HistStep(List<HistEdit> from, List<HistEdit> to, bool undo)
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            if (from.Count == 0) return Err(undo ? "Nothing to undo." : "Nothing to redo.");
+            var e = from[^1]; from.RemoveAt(from.Count - 1);
+            Put((undo ? e.Before : e.After).Clone(), e.Box, e.Slot);
+            to.Add(e);
+            return J(new { ok = true, box = e.Box, slot = e.Slot });
+        }
+        catch (Exception ex) { return Err(ex.Message); }
+    }
+
+    [JSExport]
+    public static string UndoEdit() => HistStep(UndoStack, RedoStack, true);
+
+    [JSExport]
+    public static string RedoEdit() => HistStep(RedoStack, UndoStack, false);
+
+    [JSExport]
+    public static string HistoryState() => J(new { undo = UndoStack.Count, redo = RedoStack.Count });
 
     static string Info() => J(new
     {
@@ -168,7 +206,7 @@ public static partial class Engine
         {
             if (!SaveUtil.TryGetSaveFile(data, out var sav, fileName) || sav is null)
                 return Err("Not a recognized save file.");
-            Sav = sav;
+            Sav = sav; UndoStack.Clear(); RedoStack.Clear();
             return Info();
         }
         catch (Exception e) { return Err(e.Message); }
@@ -190,7 +228,7 @@ public static partial class Engine
         try
         {
             if (!Enum.TryParse<GameVersion>(game, out var v)) return Err("Unknown game: " + game);
-            Sav = MakeBlank(v, string.IsNullOrWhiteSpace(trainer) ? "Rob" : trainer);
+            Sav = MakeBlank(v, string.IsNullOrWhiteSpace(trainer) ? "Rob" : trainer); UndoStack.Clear(); RedoStack.Clear();
             return Info();
         }
         catch (Exception e) { return Err(e.Message); }
@@ -351,6 +389,314 @@ public static partial class Engine
         if (pk is null) return Err("No Pokémon in that slot.");
         var la = new LegalityAnalysis(pk);
         return J(new { ok = true, valid = la.Valid, report = la.Report() });
+    }
+
+    // ---------- auto-legalise ----------
+    // Stage 1 fixes the Pokémon in place, one kind of problem at a time, keeping a fix only if it reduces the
+    // number of failed checks. Stage 2 (only if still illegal) rebuilds it from a matching encounter and carries
+    // the user's data (EVs, IVs, nature, moves, ...) over group by group, dropping any group that breaks legality.
+
+    static readonly string[] MoveProps = ["Move1", "Move2", "Move3", "Move4"];
+
+    static int SafeInt(object? o) { try { return o is null ? -1 : Convert.ToInt32(o); } catch { return -1; } }
+
+    static LegalityAnalysis? Analyse(PKM pk) { try { return new LegalityAnalysis(pk); } catch { return null; } }
+
+    // True if a failed check's identifier (or, as a fallback, an "Invalid" report line) mentions `part`.
+    static bool Failed(LegalityAnalysis la, string part)
+    {
+        if (Prop(la, "Results") is System.Collections.IEnumerable rs)
+        {
+            bool any = false;
+            foreach (var r in rs)
+            {
+                any = true;
+                if (Prop(r, "Valid") is false && (Prop(r, "Identifier")?.ToString() ?? "").Contains(part, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            if (any) return false;
+        }
+        return la.Report().Split('\n').Any(l => l.StartsWith("Invalid") && l.Contains(part, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // Number of failed checks (0 when legal).
+    static int Problems(LegalityAnalysis la)
+    {
+        if (la.Valid) return 0;
+        int n = 0;
+        if (Prop(la, "Results") is System.Collections.IEnumerable rs)
+            foreach (var r in rs) if (Prop(r, "Valid") is false) n++;
+        if (n == 0) n = la.Report().Split('\n').Count(l => l.StartsWith("Invalid"));
+        return Math.Max(n, 1);
+    }
+
+    // PKHeX's own "best moveset for this encounter" helper (MoveSetApplicator.SetMoveset).
+    static void SuggestMoveset(PKM pk)
+    {
+        foreach (var m in StaticMethods("MoveSetApplicator", "SetMoveset"))
+        {
+            var ps = m.GetParameters();
+            if (ps.Length == 0 || !ps[0].ParameterType.IsAssignableFrom(pk.GetType())) continue;
+            if (ps.Skip(1).Any(p => p.ParameterType != typeof(bool) && !p.HasDefaultValue)) continue;
+            try
+            {
+                var args = new object?[ps.Length]; args[0] = pk;
+                for (int i = 1; i < ps.Length; i++) args[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : false;
+                m.Invoke(null, args);
+                return;
+            }
+            catch { }
+        }
+    }
+
+    static void FixAbility(PKM c)
+    {
+        var slots = AbilitySlots(c);
+        if (slots.Count == 0) return;
+        int curNum = SafeInt(Prop(c, "AbilityNumber"));
+        int curIdx = curNum > 0 ? (int)Math.Log2(curNum) : -1;
+        var order = new List<int>();
+        if (curIdx >= 0 && curIdx < slots.Count) order.Add(curIdx);
+        for (int i = 0; i < slots.Count; i++) if (!order.Contains(i)) order.Add(i);
+        foreach (var i in order)
+            if (slots[i] > 0 && AbilityOk(c, i)) { Call(c, "RefreshAbility", i); return; }
+    }
+
+    static void FixMoves(PKM c)
+    {
+        var legal = LegalMoves(c);
+        var cur = MoveProps.Select(n => Math.Max(0, SafeInt(Prop(c, n)))).ToArray();
+        var keep = new List<int>();
+        foreach (var m in cur) if (m > 0 && (legal is null || legal.Contains(m)) && !keep.Contains(m)) keep.Add(m);
+        bool bad = cur.Count(m => m > 0) != keep.Count || cur[0] == 0;
+        if (!bad) return;
+        // Top up from PKHeX's suggested moveset (only moves that pass the per-move check).
+        var s = c.Clone();
+        foreach (var n in MoveProps) TrySet(s, [n], 0);
+        SuggestMoveset(s);
+        foreach (var n in MoveProps)
+        {
+            int m = SafeInt(Prop(s, n));
+            if (keep.Count < 4 && m > 0 && !keep.Contains(m) && (legal is null || legal.Contains(m))) keep.Add(m);
+        }
+        if (keep.Count == 0 && legal is not null) foreach (var m in legal.OrderBy(x => x).Take(4)) keep.Add(m);
+        for (int i = 0; i < 4; i++)
+        {
+            int want = i < keep.Count ? keep[i] : 0;
+            if (want == cur[i]) continue;
+            TrySet(c, [MoveProps[i]], want);
+            TrySet(c, [MoveProps[i] + "_PPUps"], 0);
+        }
+        Call(c, "HealPP");
+    }
+
+    static void FixRelearn(PKM c)
+    {
+        var rel = LegalRelearn(c);
+        if (rel is null) return;
+        var la = Analyse(c);
+        if (la is null) return;
+        var expected = ExpectedRelearn(la);
+        var cur = RelearnNames.Select(n => Math.Max(0, SafeInt(Prop(c, n)))).ToArray();
+        var want = new int[4];
+        if (expected.Length > 0)
+        {
+            for (int i = 0; i < 4 && i < expected.Length; i++) want[i] = expected[i];
+        }
+        else
+        {
+            for (int i = 0; i < 4; i++) want[i] = cur[i] != 0 && rel[i].Contains(cur[i]) ? cur[i] : 0;
+            if (want.All(x => x == 0) && Failed(la, "Relearn"))
+            {
+                var sug = SuggestedRelearn(la).Take(4).ToList();
+                for (int i = 0; i < sug.Count; i++) want[i] = sug[i];
+            }
+        }
+        for (int i = 0; i < 4; i++) if (want[i] != cur[i]) TrySet(c, [RelearnNames[i]], want[i]);
+    }
+
+    static void FixRibbons(PKM c)
+    {
+        var (legal, all) = RibbonSets(c);
+        var ok = new HashSet<string>(legal);
+        foreach (var n in all) if (!ok.Contains(n) && Prop(c, n) is true) TrySet(c, [n], false);
+        c.RefreshChecksum();
+        // Ribbons PKHeX reports as missing: add each legal one that lowers the ribbon problem count.
+        var la = Analyse(c);
+        if (la is null || !Failed(la, "Ribbon")) return;
+        int cur = RibbonProblems(la);
+        foreach (var n in legal)
+        {
+            if (Prop(c, n) is true) continue;
+            TrySet(c, [n], true); c.RefreshChecksum();
+            var tl = Analyse(c);
+            int p = tl is null ? int.MaxValue : RibbonProblems(tl);
+            if (p < cur) cur = p; else TrySet(c, [n], false);
+        }
+        c.RefreshChecksum();
+    }
+
+    static void FixEvs(PKM c)
+    {
+        int max = Lim(c, "MaxEV", 252), total = 0;
+        foreach (var s in EvStats)
+        {
+            var n = "EV_" + s;
+            int v = Math.Clamp(SafeInt(Prop(c, n)), 0, max);
+            if (max <= 255 && total + v > MaxEvTotal) v = MaxEvTotal - total;
+            TrySet(c, [n], v); total += v;
+        }
+    }
+
+    static (string Name, string Gate, Action<PKM> Fix) Fixer(string name, string gate, Action<PKM> fix) => (name, gate, fix);
+
+    // Stage 1. Returns the best version found; `steps` lists the fixes that were kept.
+    static PKM LegaliseInPlace(PKM start, List<string> steps)
+    {
+        var cur = start.Clone(); cur.RefreshChecksum();
+        var first = Analyse(cur);
+        if (first is null) return cur;
+        var la = first; int best = Problems(la);
+        // Gate = failed-check names that trigger the fixer ("*" = always try).
+        var fixers = new List<(string Name, string Gate, Action<PKM> Fix)>
+        {
+            Fixer("language/nickname", "Nickname|Language", c => FixNames(c, false)),
+            Fixer("ability", "Ability", FixAbility),
+            Fixer("moves", "Move", FixMoves),
+            Fixer("relearn moves", "Relearn", FixRelearn),
+            Fixer("ribbons", "Ribbon", FixRibbons),
+            Fixer("held item", "Item", c => TrySet(c, ["HeldItem"], 0)),
+            Fixer("EVs", "EV", FixEvs),
+            Fixer("experience", "Level|Exp", c => { TrySet(c, ["CurrentLevel"], c.CurrentLevel); Call(c, "ResetPartyStats"); }),
+            Fixer("stats", "Stat", c => Call(c, "ResetPartyStats")),
+            Fixer("Plus/mastery flags", "*", c => ApplyPlusFlags(c, false)),
+        };
+        for (int pass = 0; pass < 2 && best > 0; pass++)
+        {
+            bool progress = false;
+            foreach (var (name, gate, fix) in fixers)
+            {
+                if (best == 0) break;
+                if (gate != "*" && !gate.Split('|').Any(g => Failed(la, g))) continue;
+                var t = cur.Clone();
+                try { fix(t); t.RefreshChecksum(); } catch { continue; }
+                var nl = Analyse(t);
+                if (nl is null) continue;
+                int p = Problems(nl);
+                if (p < best) { cur = t; la = nl; best = p; if (!steps.Contains(name)) steps.Add(name); progress = true; }
+            }
+            if (!progress) break;
+        }
+        return cur;
+    }
+
+    static readonly (string Label, string Pattern)[] CarryGroups =
+    [
+        ("nature", "^(Nature|StatNature)$"),
+        ("held item", "^HeldItem$"),
+        ("EVs", "^EV_"),
+        ("IVs", "^IV_"),
+        ("ability", "^(Ability|AbilityNumber)$"),
+        ("moves", "^Move[1-4](_PP|_PPUps)?$"),
+        ("nickname", "^(Nickname|IsNicknamed)$"),
+        ("ball", "^Ball$"),
+        ("size", "^(HeightScalar|WeightScalar|Scale)$"),
+        ("trainer details", "^(OriginalTrainerName|OT_Name|TID16|SID16|TrainerTID7|TrainerSID7|OriginalTrainerGender|OT_Gender)$"),
+    ];
+
+    static void CopyMatching(PKM from, PKM to, string pattern)
+    {
+        var re = new System.Text.RegularExpressions.Regex(pattern);
+        foreach (var p in Editable(from).Where(p => re.IsMatch(p.Name)))
+        {
+            var q = FindProp(to.GetType(), p.Name);
+            if (q is null || !q.CanWrite || q.PropertyType != p.PropertyType) continue;
+            try { q.SetValue(to, p.GetValue(from)); } catch { }
+        }
+    }
+
+    // Stage 2. Tries encounters that match the Pokémon's species/form (closest location and game first) and keeps the
+    // legal build that preserves the most of the user's data.
+    static (PKM? pk, string encounter, List<string> dropped) RebuildFrom(PKM orig)
+    {
+        int species = orig.Species, form = Math.Max(0, SafeInt(Prop(orig, "Form"))), level = Math.Max(1, (int)orig.CurrentLevel);
+        var tmpl = Template(species, form);
+        if (tmpl is null) return (null, "", new List<string>());
+        var encs = FindEncounters(tmpl);
+        bool alphaGame = AlphaSupported(), alpha = Prop(orig, "IsAlpha") is true;
+        int metLoc = SafeInt(Prop(orig, "MetLocation") ?? Prop(orig, "Met_Location"));
+        int ver = SafeInt(Prop(orig, "Version") ?? Prop(orig, "Game"));
+        var ordered = encs.Where(x => !alphaGame || (Prop(x, "IsAlpha") is true) == alpha)
+            .OrderBy(x => SafeInt(Prop(x, "Location")) == metLoc ? 0 : 1)
+            .ThenBy(x => SafeInt(Prop(x, "Version")) == ver ? 0 : 1)
+            .Take(60).ToList();
+
+        PKM? best = null; string bestEnc = ""; var bestDropped = new List<string>(); int bestKept = -1, built = 0;
+        foreach (var enc in ordered)
+        {
+            foreach (var shiny in orig.IsShiny ? new[] { true, false } : new[] { false })
+            {
+                var (b, _) = Build(enc, species, level, shiny);
+                if (b is null) continue;
+                if (alphaGame && Prop(b, "IsAlpha") is bool pa && pa != alpha) continue;
+                var dropped = new List<string>();
+                if (orig.IsShiny && !shiny) dropped.Add("shiny");
+                int kept = 0;
+                foreach (var (label, pattern) in CarryGroups)
+                {
+                    var t = b.Clone();
+                    CopyMatching(orig, t, pattern);
+                    if (label == "moves") Call(t, "HealPP");
+                    t.RefreshChecksum();
+                    if (Analyse(t) is { Valid: true }) { b = t; kept++; } else dropped.Add(label);
+                }
+                if (kept > bestKept) { best = b; bestKept = kept; bestEnc = EncName(enc); bestDropped = dropped; }
+                built++;
+                break;
+            }
+            if (bestDropped.Count == 0 && best is not null) break;   // nothing lost: done
+            if (built >= 6) break;                                    // keep it quick in the browser
+        }
+        if (best is not null)
+        {
+            var t = best.Clone();
+            ApplyPlusFlags(t, false); t.RefreshChecksum();
+            if (Analyse(t) is { Valid: true }) best = t;
+        }
+        return (best, bestEnc, bestDropped);
+    }
+
+    [JSExport]
+    public static string AutoLegalise(int box, int slot)
+    {
+        try
+        {
+            var pk = Slot(box, slot);
+            if (pk is null || Sav is null) return Err("No Pokémon in that slot.");
+            var la0 = new LegalityAnalysis(pk);
+            if (la0.Valid) return J(new { ok = true, valid = true, changed = false, message = "Already legal." });
+            int before = Problems(la0);
+
+            var steps = new List<string>();
+            var result = LegaliseInPlace(pk, steps);
+            var la = new LegalityAnalysis(result);
+            var dropped = new List<string>();
+            if (!la.Valid)
+            {
+                var (rb, enc, drop) = RebuildFrom(result);
+                if (rb is not null)
+                {
+                    result = rb; la = new LegalityAnalysis(result); dropped = drop;
+                    steps = ["rebuilt from encounter: " + enc];
+                }
+            }
+            int after = Problems(la);
+            if (after >= before)
+                return J(new { ok = true, valid = false, changed = false, message = "Couldn't find an automatic fix. The report lists what's wrong." });
+            result.RefreshChecksum();
+            Store(result, box, slot);
+            return J(new { ok = true, valid = la.Valid, changed = true, steps, dropped, remaining = after });
+        }
+        catch (Exception e) { return Err(e.Message); }
     }
 
     // ---------- names and helpers for the UI ----------
@@ -593,6 +939,7 @@ public static partial class Engine
         c.Move1 = (ushort)move; c.Move2 = 0; c.Move3 = 0; c.Move4 = 0;
         TrySet(c, ["Move1_PPUps"], 0); TrySet(c, ["Move2_PPUps"], 0); TrySet(c, ["Move3_PPUps"], 0); TrySet(c, ["Move4_PPUps"], 0);
         Call(c, "HealPP");
+        ApplyPlusFlags(c, false);   // Z-A TM/Plus and Arceus mastery moves are only valid once their flags are set
         c.RefreshChecksum();
         var la = new LegalityAnalysis(c);
         if (Prop(la, "Info") is { } info && Prop(info, "Moves") is System.Collections.IEnumerable mv)
@@ -615,18 +962,13 @@ public static partial class Engine
         var key = MoveKey(pk);
         if (MoveCache.TryGetValue(key, out var hit)) return hit;
 
+        // PKHeX's suggested list is not complete (it can be just the current level-up moves), so it is only added
+        // to, never used to narrow the search: every move id is checked against the real legality check.
+        int max = Prop(Sav!, "MaxMoveID") is { } mm ? Convert.ToInt32(mm) : NameList("Move", "movelist").Length - 1;
+        IEnumerable<int> cand = Enumerable.Range(1, Math.Max(1, max));
         var pool = SuggestedMoves(pk);
-        IEnumerable<int> cand;
-        if (pool is not null)
-        {
-            foreach (var n in new[] { "Move1", "Move2", "Move3", "Move4" }) pool.Add(Convert.ToInt32(Prop(pk, n) ?? 0));
-            pool.Remove(0); cand = pool;
-        }
-        else
-        {
-            int max = Prop(Sav!, "MaxMoveID") is { } mm ? Convert.ToInt32(mm) : NameList("Move", "movelist").Length - 1;
-            cand = Enumerable.Range(1, Math.Max(1, max));
-        }
+        if (pool is not null) cand = cand.Union(pool);
+        cand = cand.Union(MoveProps.Select(n => SafeInt(Prop(pk, n))).Where(x => x > 0)).ToList();
 
         var set = new HashSet<int>();
         foreach (var m in cand) { try { if (MoveSlotValid(pk, m)) set.Add(m); } catch { } }
@@ -777,6 +1119,34 @@ public static partial class Engine
 
     // Ribbons and marks that PKHeX accepts on this Pokémon. Each one is tried alone on a ribbon-free copy,
     // so the cost is one legality check per ribbon the first time; results are cached per encounter data.
+    static (List<string> legal, List<string> all) RibbonSets(PKM pk)
+    {
+        var all = Editable(pk).Where(p => p.PropertyType == typeof(bool) && p.Name.StartsWith("Ribbon")).Select(p => p.Name).ToList();
+        var key = pk.GetType().Name + "|" + MoveKey(pk);
+        if (!RibbonCache.TryGetValue(key, out var legal))
+        {
+            legal = [];
+            var baseline = pk.Clone();
+            foreach (var n in all) TrySet(baseline, [n], false);
+            baseline.RefreshChecksum();
+            int baseProblems = RibbonProblems(new LegalityAnalysis(baseline));
+            foreach (var n in all)
+            {
+                try
+                {
+                    var c = baseline.Clone();
+                    TrySet(c, [n], true);
+                    c.RefreshChecksum();
+                    if (RibbonProblems(new LegalityAnalysis(c)) <= baseProblems) legal.Add(n);
+                }
+                catch { }
+            }
+            if (RibbonCache.Count > 32) RibbonCache.Clear();
+            RibbonCache[key] = legal;
+        }
+        return (legal, all);
+    }
+
     [JSExport]
     public static string GetLegalRibbons(int box, int slot)
     {
@@ -784,29 +1154,7 @@ public static partial class Engine
         {
             var pk = Slot(box, slot);
             if (pk is null) return Err("No Pokémon in that slot.");
-            var all = Editable(pk).Where(p => p.PropertyType == typeof(bool) && p.Name.StartsWith("Ribbon")).Select(p => p.Name).ToList();
-            var key = pk.GetType().Name + "|" + MoveKey(pk);
-            if (!RibbonCache.TryGetValue(key, out var legal))
-            {
-                legal = [];
-                var baseline = pk.Clone();
-                foreach (var n in all) TrySet(baseline, [n], false);
-                baseline.RefreshChecksum();
-                int baseProblems = RibbonProblems(new LegalityAnalysis(baseline));
-                foreach (var n in all)
-                {
-                    try
-                    {
-                        var c = baseline.Clone();
-                        TrySet(c, [n], true);
-                        c.RefreshChecksum();
-                        if (RibbonProblems(new LegalityAnalysis(c)) <= baseProblems) legal.Add(n);
-                    }
-                    catch { }
-                }
-                if (RibbonCache.Count > 32) RibbonCache.Clear();
-                RibbonCache[key] = legal;
-            }
+            var (legal, all) = RibbonSets(pk);
             return J(new { ok = true, legal, all });
         }
         catch (Exception e) { return Err(e.Message); }
@@ -1046,7 +1394,7 @@ public static partial class Engine
         catch (Exception e) { return Err(e.Message); }
     }
 
-    // Names depend on the language, and a blank test save can report an invalid one. Eggs that become another
+    // Names depend on the language, and a blank save can report an invalid one. Eggs that become another
     // species are treated as hatched. Only un-nicknamed Pokémon are touched, so event nicknames are kept.
     static void FixNames(PKM c, bool speciesChanged)
     {
