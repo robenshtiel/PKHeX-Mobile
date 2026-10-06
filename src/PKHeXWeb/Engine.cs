@@ -103,18 +103,8 @@ public static partial class Engine
         throw new InvalidOperationException("Could not find PKHeX's blank-save method.");
     }
 
-    static byte[] PkmBytes(PKM pk)
-    {
-        foreach (var n in new[] { "DecryptedPartyData", "DecryptedBoxData", "Data" })
-        {
-            var ty = pk.GetType();
-            var v = ty.GetProperty(n)?.GetValue(pk) ?? ty.GetField(n)?.GetValue(pk);
-            if (v is byte[] b) return (byte[])b.Clone();
-            if (v is Memory<byte> m) return m.ToArray();
-            if (v is ReadOnlyMemory<byte> rm) return rm.ToArray();
-        }
-        throw new InvalidOperationException("Could not read this Pokémon's raw data.");
-    }
+    // Data is a Span/array depending on PKHeX version; ToArray() compiles for all of them.
+    static byte[] PkmBytes(PKM pk) => pk.Data.ToArray();
 
     // ---------- saves ----------
 
@@ -276,6 +266,7 @@ public static partial class Engine
             TrySet(pk, ["OriginalTrainerName", "OT_Name"], Sav.OT);
             var tid = TryGet(Sav, ["TID16", "TID"]); if (tid is not null) TrySet(pk, ["TID16", "TID"], tid);
             var sid = TryGet(Sav, ["SID16", "SID"]); if (sid is not null) TrySet(pk, ["SID16", "SID"], sid);
+            TrySet(pk, ["EncryptionConstant"], pk.PID);
             TrySet(pk, ["Language"], 2);
             foreach (var iv in new[] { "IV_HP", "IV_ATK", "IV_DEF", "IV_SPA", "IV_SPD", "IV_SPE" })
                 TrySet(pk, [iv], 31);
