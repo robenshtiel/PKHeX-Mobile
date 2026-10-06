@@ -26,10 +26,11 @@ const TAB = {
 };
 const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main' };
 let legalDirty = true;
-const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg)/;
+const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg|Ability|Move[1-4]$)/;
+const ONLY_LEGAL = /^(Move[1-4]|Ability)$/;
 const loadOpts = () => {
   const b = call(() => J(E.GetOptions(S.box, S.slot))).opts ?? {};
-  if (legalDirty) { S.legal = call(() => J(E.GetLegalChoices(S.box, S.slot))).opts ?? {}; legalDirty = false; }
+  if (legalDirty) { const r = call(() => J(E.GetLegalChoices(S.box, S.slot))); S.legal = r.opts ?? {}; if (!r.ok) toast('Legal lists unavailable: ' + r.error); legalDirty = false; }
   S.opts = { ...b, ...S.legal };
 };
 const by = (n) => S.props.find((p) => p.name === n);
@@ -37,6 +38,7 @@ const by = (n) => S.props.find((p) => p.name === n);
 function ctl(p) {
   const v = p.value ?? '', lbl = nice(p.name), k = LISTS.find(([r]) => r.test(p.name))?.[1], o = S.opts[p.name];
   if (o) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${o.some((x) => String(x.v) === v) ? '' : `<option value="${esc(v)}">${esc(v)} (unknown)</option>`}${o.map((x) => `<option value="${x.v}">${esc(x.t)}</option>`).join('')}</select></label>`;
+  if (!o && ONLY_LEGAL.test(p.name)) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}" disabled title="Legal list unavailable"><option value="${esc(v)}">${esc((k && N[k][+v]) || v)}</option></select></label>`;
   if (p.type === 'Boolean') return `<label class="f chk"><input type="checkbox" data-p="${p.name}"${v === 'True' ? ' checked' : ''}>${lbl}</label>`;
   if (p.options) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${p.options.map((o) => `<option>${esc(o)}</option>`).join('')}</select></label>`;
   if (k) return `<label class="f">${lbl}<select data-p="${p.name}" data-v="${esc(v)}">${listOpts(k)}</select></label>`;
