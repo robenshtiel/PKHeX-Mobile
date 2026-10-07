@@ -86,7 +86,24 @@ public static partial class Engine
     {
         if (pk.Species == 0) return new { slot, empty = true };
         var name = GameInfo.Strings.Species.ElementAtOrDefault(pk.Species) ?? ("#" + pk.Species);
-        return new { slot, empty = false, id = (int)pk.Species, species = name, nick = pk.Nickname, level = pk.CurrentLevel, shiny = pk.IsShiny };
+        return new { slot, empty = false, id = (int)pk.Species, species = name, nick = pk.Nickname, level = pk.CurrentLevel, shiny = pk.IsShiny,
+                     legal = IsLegalCached(pk), alpha = Prop(pk, "IsAlpha") is true };
+    }
+
+    // Legality for the box thumbnails. Cached by the Pokémon's raw data so redrawing a box doesn't re-run every check.
+    static readonly Dictionary<string, bool> LegalCache = new();
+    static object? LegalCacheSav;
+
+    static bool IsLegalCached(PKM pk)
+    {
+        if (!ReferenceEquals(LegalCacheSav, Sav)) { LegalCache.Clear(); LegalCacheSav = Sav; }
+        var key = pk.GetType().Name + Convert.ToBase64String(pk.Data);
+        if (LegalCache.TryGetValue(key, out var v)) return v;
+        bool ok;
+        try { ok = new LegalityAnalysis(pk).Valid; } catch { ok = false; }
+        if (LegalCache.Count > 4000) LegalCache.Clear();
+        LegalCache[key] = ok;
+        return ok;
     }
 
     static bool Simple(Type t) => t.IsPrimitive || t.IsEnum || t == typeof(string);
@@ -774,6 +791,24 @@ public static partial class Engine
             result.RefreshChecksum();
             Store(result, box, slot);
             return J(new { ok = true, valid = la.Valid, changed = true, steps, dropped, remaining = after });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
+    // Every occupied slot (party first as box -1, then each box) as [box, slot] pairs, for "Auto-legalise all".
+    [JSExport]
+    public static string OccupiedSlots()
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            var list = new List<int[]>();
+            for (int i = 0; i < Sav.PartyCount; i++)
+                if (Slot(-1, i) is { } p0 && p0.Species > 0) list.Add([-1, i]);
+            for (int b = 0; b < Sav.BoxCount; b++)
+                for (int i = 0; i < Sav.BoxSlotCount; i++)
+                    if (Slot(b, i) is { } p && p.Species > 0) list.Add([b, i]);
+            return J(new { ok = true, slots = list });
         }
         catch (Exception e) { return Err(e.Message); }
     }
@@ -1652,6 +1687,66 @@ public static partial class Engine
             if (la.Valid) return (c, "");
         }
         return (null, report);
+    }
+
+    // ---------- legal living dex ----------
+
+    // Species that exist in the loaded game, in dex order, and how many box slots the save has.
+    [JSExport]
+    public static string LivingDexPlan()
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            int top = GameInfo.Strings.Species.Count() - 1;
+            int declared = SafeInt(Prop(Sav, "MaxSpeciesID"));
+            int max = declared > 0 ? Math.Min(declared, top) : top;
+            var personal = Prop(Sav, "Personal");
+            var mi = personal?.GetType().GetMethods().FirstOrDefault(x => x.Name == "IsSpeciesInGame" && x.GetParameters().Length == 1);
+            var list = new List<int>();
+            for (int sp = 1; sp <= max; sp++)
+            {
+                bool present = true;
+                if (mi is not null) { try { present = (bool)mi.Invoke(personal, [Convert.ChangeType(sp, mi.GetParameters()[0].ParameterType)])!; } catch { present = true; } }
+                if (present) list.Add(sp);
+            }
+            return J(new { ok = true, species = list, capacity = Sav.BoxCount * Sav.BoxSlotCount });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
+    // Builds one legal Pokémon of this species and stores it at position `index` (box-major). Shiny is tried first when
+    // asked for; if no encounter can legally be shiny, the normal one is used instead.
+    [JSExport]
+    public static string LivingDexAdd(int index, int species, bool shiny)
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            int box = index / Sav.BoxSlotCount, slot = index % Sav.BoxSlotCount;
+            if (box >= Sav.BoxCount) return Err("Out of box space.");
+            var alphaGame = AlphaSupported();
+            var encs = FindEncounters(Template(species, 0)!)
+                .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0).Take(80).ToList();
+            if (encs.Count == 0) return Err("No legal encounter found.");
+            PKM? best = null; var gotShiny = false;
+            if (shiny)
+                foreach (var enc in encs)
+                {
+                    var (pk, _) = Build(enc, species, 1, true);
+                    if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; break; }
+                }
+            if (best is null)
+                foreach (var enc in encs)
+                {
+                    var (pk, _) = Build(enc, species, 1, false);
+                    if (pk is not null) { best = pk; break; }
+                }
+            if (best is null) return Err("Couldn't build a legal version.");
+            Store(best, box, slot);
+            return J(new { ok = true, shiny = gotShiny });
+        }
+        catch (Exception e) { return Err(e.Message); }
     }
 
     [JSExport]
