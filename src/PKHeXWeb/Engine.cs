@@ -1780,10 +1780,45 @@ public static partial class Engine
     // Evolutions that count something (Rage Fist uses, damage taken, critical hits) store it in the form argument, and the
     // required value differs per species. Rather than hard-coding per game, set it directly (and the Rage Fist counter if
     // this PKHeX version has one separately).
-    static void SetFormArg(PKM pk, int value)
+    // Minimum form argument PKHeX requires once these have evolved from the species that counts (FormArgumentVerifier).
+    // Gholdengo is 0 in Z-A: Z-A evolutions don't copy the Gimmighoul coin count.
+    static readonly Dictionary<int, int> EvoArg = new()
     {
-        TrySet(pk, ["FormArgument"], value);
-        if (pk.Species == 979 || pk.Species == 57) TrySet(pk, ["RageFistTimes"], value);
+        [865] = 3,    // Sirfetch'd: critical hits
+        [867] = 49,   // Runerigus: HP lost
+        [979] = 20,   // Annihilape: Rage Fist uses
+        [899] = 20,   // Wyrdeer
+        [902] = 294,  // Basculegion
+        [983] = 3,    // Kingambit
+        [1000] = 0,   // Gholdengo
+    };
+
+    static bool SetFormArg(PKM pk, int value)
+    {
+        bool ok = false;
+        try
+        {
+            var it = typeof(SaveFile).Assembly.GetType("PKHeX.Core.IFormArgument");
+            var p = it?.GetProperty("FormArgument");
+            if (p is not null && p.CanWrite && it!.IsInstanceOfType(pk)) { p.SetValue(pk, Convert.ChangeType(value, p.PropertyType, CultureInfo.InvariantCulture)); ok = true; }
+        }
+        catch { }
+        if (!ok) ok = TrySet(pk, ["FormArgument"], value);
+        return ok;
+    }
+
+    // Shown after a failed build so we can see which evolution-counter fields this Pokémon format really has.
+    static string DebugArgs(PKM pk)
+    {
+        try
+        {
+            var re = new System.Text.RegularExpressions.Regex("Form|Rage|Coin|Arg|Count|Times");
+            var props = pk.GetType().GetProperties().Where(p => p.GetIndexParameters().Length == 0 && p.CanRead && re.IsMatch(p.Name))
+                .Select(p => { object? v = null; try { v = p.GetValue(pk); } catch { } return $"{p.Name}={v}"; });
+            var ifs = pk.GetType().GetInterfaces().Select(x => x.Name).Where(n => re.IsMatch(n));
+            return $"\n[debug {pk.GetType().Name} sp={pk.Species}: {string.Join(", ", props)} | {string.Join(", ", ifs)}]";
+        }
+        catch { return ""; }
     }
 
     // Builds a Pokémon from one encounter, adjusts it to the wanted species/level, and returns it only if it passes the legality check.
@@ -1797,7 +1832,7 @@ public static partial class Engine
         if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
         FixHandler(pk, enc);
 
-        var first = true; string report = ""; string fixReport = "";
+        var first = true; string report = ""; string fixReport = ""; int fixBad = int.MaxValue;
         int min = Math.Max(1, Convert.ToInt32(Prop(enc, "LevelMin") ?? 1));
         var tries = new List<int> { Math.Max(level, min) };
         if (pk.Species != species) tries.AddRange(new[] { 16, 20, 25, 30, 32, 36, 40, 45, 50, 55, 65, 100 }.Where(l => l > tries[0]));
@@ -1812,7 +1847,6 @@ public static partial class Engine
                 // to species that only have one form.
                 if (FormCountOf(species) <= 1 && SafeInt(Prop(c, "Form")) > 0) TrySet(c, ["Form"], 0);
                 Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
-                SetFormArg(c, 0);   // the earlier stage's counter doesn't apply to the evolved species
             }
             FixNames(c, changed);
             if (shiny) SetShiny(c, true);
@@ -1836,7 +1870,15 @@ public static partial class Engine
                     x => { ForceTraded(x); SetLevelUpMoves(x); },
                     x => { ForceTraded(x); TrySet(x, ["HeldItem"], 537); },                        // Prism Scale (Feebas)
                 };
-                foreach (var arg in new[] { 1, 3, 20, 49 })   // Sirfetch'd crits, Annihilape Rage Fist, Runerigus damage...
+                if (EvoArg.TryGetValue(species, out var exact))
+                {
+                    variants.Insert(0, x => { SetFormArg(x, exact); if (x.Species == 979) x.Move1 = 889; });
+                    variants.Insert(1, x => { ForceTraded(x); SetFormArg(x, exact); if (x.Species == 979) x.Move1 = 889; });
+                    variants.Insert(2, x => { ForceTraded(x); SetFormArg(x, exact); SetLevelUpMoves(x); if (x.Species == 979) x.Move1 = 889; });
+                }
+                variants.Add(x => SetFormArg(x, 0));   // the earlier stage's counter doesn't apply to the evolved species
+                variants.Add(x => { ForceTraded(x); SetFormArg(x, 0); });
+                foreach (var arg in new[] { 1, 2, 3, 5, 20, 49, 50, 100, 255, 999 })   // Sirfetch'd crits, Annihilape Rage Fist, Runerigus damage...
                 {
                     int a = arg;
                     variants.Add(x => { SetFormArg(x, a); if (x.Species == 979) x.Move1 = 889; });
@@ -1852,13 +1894,14 @@ public static partial class Engine
                         ApplyPlusFlags(fixedPk, false); fixedPk.RefreshChecksum();
                         var fl = new LegalityAnalysis(fixedPk);
                         if (fl.Valid) return (fixedPk, "");
-                        if (vi == 0 && fixReport == "") fixReport = fl.Report();   // what is still wrong after the normal fixes
+                        var rep2 = fl.Report(); int bad = rep2.Split('\n').Count(l => l.TrimStart().StartsWith("Invalid"));
+                        if (fixReport == "" || bad < fixBad) { fixReport = rep2; fixBad = bad; }   // report from the closest attempt
                     }
                     catch { }
                 }
             }
         }
-        return (null, fixReport != "" ? fixReport : report);
+        return (null, (fixReport != "" ? fixReport : report) + (allowFix ? DebugArgs(pk) : ""));
     }
 
     // ---------- legal living dex ----------
