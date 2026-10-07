@@ -551,6 +551,10 @@ public static partial class Engine
             sb.AppendLine($"Info.Moves type: {mvObj?.GetType().FullName ?? "null"}");
             int i = 0;
             foreach (var m in Items(mvObj)) sb.AppendLine($"  slot {++i}: {m} | Valid={Prop(m!, "Valid")}");
+            var pm = PoolMethods();
+            var learnable = PoolMoves(pk);
+            sb.AppendLine($"GetValidMoves overloads: {pm.Count}; learnable pool size: {learnable?.Count.ToString() ?? "none"}");
+            foreach (var m in pm) sb.AppendLine("  " + m.DeclaringType!.Name + "." + m.Name + "(" + string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name)) + ") -> " + m.ReturnType.Name);
             sb.AppendLine("--- report ---");
             sb.AppendLine(la.Report());
             return J(new { ok = true, text = sb.ToString() });
@@ -1025,6 +1029,47 @@ public static partial class Engine
         return !la.Report().Split('\n').Any(l => l.StartsWith("Invalid") && (l.Contains("Move 1") || l.Contains("Move1")));
     }
 
+    // Every move PKHeX says this Pokémon can learn from any source (level-up, TM, tutor, egg, plus...), independent of
+    // the matched encounter's own move rules. This is what PKHeX's own move dropdown is built from.
+    static object? ResolveArg(Type pt, PKM pk, LegalityAnalysis la)
+    {
+        if (pt.IsAssignableFrom(pk.GetType())) return pk;
+        if (pt.IsAssignableFrom(typeof(LegalityAnalysis))) return la;
+        if (pt == typeof(bool)) return true;
+        if (pt.IsEnum) return Enum.ToObject(pt, Enum.GetValues(pt).Cast<object>().Aggregate(0L, (a, x) => a | Convert.ToInt64(x)));
+        if (Prop(la, "Info") is { } info)
+            foreach (var n in new[] { "EvoChainsAllGens", "EvoChains" })
+                if (Prop(info, n) is { } v && pt.IsAssignableFrom(v.GetType())) return v;
+        return pt.IsValueType ? Activator.CreateInstance(pt) : null;
+    }
+
+    static List<MethodInfo> PoolMethods() => typeof(SaveFile).Assembly.GetTypes()
+        .Where(t => t.IsAbstract && t.IsSealed && t.IsPublic)
+        .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+        .Where(m => m.Name == "GetValidMoves" && !m.IsGenericMethodDefinition).ToList();
+
+    static HashSet<int>? PoolMoves(PKM pk)
+    {
+        var la = new LegalityAnalysis(pk);
+        HashSet<int>? best = null;
+        foreach (var m in PoolMethods())
+        {
+            try
+            {
+                var ps = m.GetParameters();
+                var args = ps.Select(p => ResolveArg(p.ParameterType, pk, la)).ToArray();
+                var r = m.Invoke(null, args);
+                var set = new HashSet<int>();
+                if (r is ReadOnlyMemory<ushort> mem) foreach (var x in mem.ToArray()) set.Add(x);
+                else if (r is System.Collections.IEnumerable e && r is not string) foreach (var x in e) set.Add(Convert.ToInt32(x));
+                set.Remove(0);
+                if (best is null || set.Count > best.Count) best = set;
+            }
+            catch { }
+        }
+        return best is { Count: > 0 } ? best : null;
+    }
+
     static readonly Dictionary<string, HashSet<int>> MoveCache = new();
 
     static string MoveKey(PKM pk) => string.Join("|", pk.Species, Prop(pk, "Form"), pk.CurrentLevel,
@@ -1048,6 +1093,9 @@ public static partial class Engine
 
         var set = new HashSet<int>();
         foreach (var m in cand) { try { if (MoveSlotValid(pk, m)) set.Add(m); } catch { } }
+        // Moves the Pokémon can learn from any source count as legal choices even when the matched encounter
+        // (e.g. a Hyperspace wild encounter) insists on its own starting moves.
+        try { if (PoolMoves(pk) is { } learnable) set.UnionWith(learnable); } catch { }
         // If the probe accepts nothing beyond the Pokémon's own moves, the probe itself is failing (not the Pokémon),
         // so return null and let the editor offer the full move list instead of a list of 4.
         var own = MoveProps.Select(n => SafeInt(Prop(pk, n))).Where(x => x > 0).ToHashSet();
