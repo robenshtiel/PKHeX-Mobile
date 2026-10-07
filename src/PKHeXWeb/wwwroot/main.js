@@ -633,15 +633,16 @@ function trOpen() {
     if (!confirm(`Fill up to ${list.length} slots from Box 1, slot 1 with a legal ${shiny ? 'shiny ' : ''}living dex? Pokémon in those slots will be replaced (undo only covers the last 200 edits).`)) return;
     running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
     for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = true;
-    let placed = 0, shinies = 0, cross = 0; const skipped = [];
+    let placed = 0, shinies = 0, cross = 0, goCount = 0; const skipped = [];
     for (let i = 0; i < list.length && !stop; i++) {
       stat.textContent = `Building ${i + 1} / ${list.length}…`;
       await new Promise((r) => setTimeout(r, 0));   // let the page repaint between species
       const r = call(() => J(E.LivingDexAdd(placed, list[i], shiny)));
-      if (r.ok) { placed++; if (r.shiny) shinies++; if (r.cross) cross++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
+      if (r.ok) { placed++; if (r.shiny) shinies++; if (r.cross) cross++; if (r.go) goCount++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
     }
     running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = false;
     stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed}` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
+      + (goCount ? `, ${goCount} from Pokémon GO` : '')
       + (cross ? `, ${cross} from another game of this generation (traded in)` : '')
       + (skipped.length ? `. Skipped ${skipped.length}: ${skipped.slice(0, 12).join('; ')}${skipped.length > 12 ? '…' : ''}.` : '.');
     legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
