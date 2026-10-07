@@ -1845,17 +1845,20 @@ public static partial class Engine
         int min = Math.Max(1, Convert.ToInt32(Prop(enc, "LevelMin") ?? 1));
         var tries = new List<int> { Math.Max(level, min) };
         if (pk.Species != species) tries.AddRange(new[] { 16, 20, 25, 30, 32, 36, 40, 45, 50, 55, 65, 100 }.Where(l => l > tries[0]));
-        foreach (var lv in tries)
+        // Each level is tried twice for evolved species: once with the evolved species' ability (the normal case), and once
+        // keeping the ability the encounter produced. PKHeX matches some encounters (Gimmighoul, Feebas) only with the latter.
+        foreach (var (lv, keepAbility) in tries.SelectMany(l => new[] { (l, false), (l, true) }))
         {
             var c = pk.Clone();
             var changed = c.Species != species;
+            if (!changed && keepAbility) continue;
             if (changed)
             {
                 c.Species = (ushort)species;
                 // Regional/alternate forms of the earlier stage (Galarian Farfetch'd, roaming Gimmighoul...) don't carry over
                 // to species that only have one form.
                 if (FormCountOf(species) <= 1 && SafeInt(Prop(c, "Form")) > 0) TrySet(c, ["Form"], 0);
-                Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
+                if (!keepAbility) Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
             }
             FixNames(c, changed);
             if (shiny) SetShiny(c, true);
@@ -1884,6 +1887,13 @@ public static partial class Engine
                     variants.Insert(0, x => { SetFormArg(x, exact); if (x.Species == 979) x.Move1 = 889; });
                     variants.Insert(1, x => { ForceTraded(x); SetFormArg(x, exact); if (x.Species == 979) x.Move1 = 889; });
                     variants.Insert(2, x => { ForceTraded(x); SetFormArg(x, exact); SetLevelUpMoves(x); if (x.Species == 979) x.Move1 = 889; });
+                }
+                // Set only the ability ID (never the slot number) to each ability the evolved species can have.
+                foreach (var abId in AbilitySlots(c).Where(a => a > 0).Distinct().ToList())
+                {
+                    int ab = abId;
+                    variants.Add(x => { TrySet(x, ["Ability"], ab); });
+                    variants.Add(x => { ForceTraded(x); TrySet(x, ["Ability"], ab); });
                 }
                 // Single-ability species (Gimmighoul/Gholdengo) have three identical ability slots, and some encounters only match one
                 // of them. Try every slot for the evolved species' ability, alone and with the traded flag.
