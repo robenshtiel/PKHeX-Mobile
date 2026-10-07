@@ -554,7 +554,13 @@ public static partial class Engine
             var pm = PoolMethods();
             var learnable = PoolMoves(pk);
             sb.AppendLine($"GetValidMoves overloads: {pm.Count}; learnable pool size: {learnable?.Count.ToString() ?? "none"}");
-            foreach (var m in pm) sb.AppendLine("  " + m.DeclaringType!.Name + "." + m.Name + "(" + string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name)) + ") -> " + m.ReturnType.Name);
+            var found = typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsPublic)
+                .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                .Where(m => m.Name is "GetAllMoves" or "GetValidMoves" or "GetSuggestedMoves" or "GetMoveSet" or "GetLegalMoves" or "GetCurrentMoves" || (m.Name.Contains("Moves") && m.IsStatic && m.DeclaringType!.Name.Contains("Move")))
+                .Take(40);
+            foreach (var m in found) sb.AppendLine("  " + m.DeclaringType!.Name + "." + m.Name + "(" + string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name)) + ") -> " + m.ReturnType.Name);
+            try { sb.AppendLine("all-sources pool: " + GroupPool(pk).note); } catch (Exception ex) { sb.AppendLine("all-sources pool failed: " + ex.Message); }
+            try { sb.AppendLine("level-up pool: " + LevelUpPool(pk).note); } catch (Exception ex) { sb.AppendLine("level-up pool failed: " + ex.Message); }
             sb.AppendLine("--- report ---");
             sb.AppendLine(la.Report());
             return J(new { ok = true, text = sb.ToString() });
@@ -1070,6 +1076,77 @@ public static partial class Engine
         return best is { Count: > 0 } ? best : null;
     }
 
+    // Level-up moves (up to the current level) from the game's own learnset, found via PKHeX's per-game LearnSource class.
+    // Covers only level-up moves; TM/tutor/egg sources are added separately once their API is known.
+    static string LearnCode(PKM pk) => pk.GetType().Name switch
+    {
+        "PA9" => "9ZA", "PK9" => "9SV", "PA8" => "8LA", "PK8" => "8SWSH", "PB8" => "8BDSP", _ => "",
+    };
+
+    static (HashSet<int>? moves, string note) LevelUpPool(PKM pk)
+    {
+        var code = LearnCode(pk);
+        if (code == "") return (null, "no learn-source mapping for " + pk.GetType().Name);
+        var t = typeof(SaveFile).Assembly.GetTypes().FirstOrDefault(x => x.IsPublic && x.Name.StartsWith("LearnSource") && x.Name.EndsWith(code));
+        if (t is null) return (null, "no LearnSource*" + code + " type");
+        var inst = t.GetField("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+                   ?? t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+        if (inst is null) return (null, t.Name + " has no Instance");
+        var gm = t.GetMethods(BindingFlags.Public | BindingFlags.Instance).FirstOrDefault(m => m.Name == "GetLearnset" && m.GetParameters().Length == 2);
+        if (gm is null) return (null, t.Name + " has no GetLearnset(species, form)");
+        var set = new HashSet<int>();
+        int form = SafeInt(Prop(pk, "Form"));
+        // The Pokémon's own species, plus earlier stages that PKHeX reports for it (best effort).
+        foreach (var sp in new[] { (int)pk.Species })
+        {
+            var ps = gm.GetParameters();
+            var ls = gm.Invoke(inst, [Convert.ChangeType(sp, ps[0].ParameterType), Convert.ChangeType(form, ps[1].ParameterType)]) as Learnset;
+            if (ls is null) continue;
+            foreach (var mv in ls.GetMoveRange((byte)Math.Max(1, (int)pk.CurrentLevel))) if (mv != 0) set.Add(mv);
+        }
+        return (set.Count > 0 ? set : null, t.Name + ": " + set.Count + " level-up moves");
+    }
+
+    // Everything PKHeX says this Pokémon can learn from any source, via ILearnGroup.GetAllMoves, walking back through earlier games.
+    static ILearnGroup? CurrentGroup(PKM pk, LegalityAnalysis la)
+    {
+        foreach (var m in typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsAbstract && t.IsSealed && t.IsPublic)
+                     .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                     .Where(m => typeof(ILearnGroup).IsAssignableFrom(m.ReturnType) && !m.IsGenericMethodDefinition)
+                     .OrderByDescending(m => m.Name.Contains("Current")))
+        {
+            var ps = m.GetParameters();
+            if (ps.Length == 0 || !ps[0].ParameterType.IsAssignableFrom(pk.GetType())) continue;
+            try
+            {
+                var args = ps.Select(p => ResolveArg(p.ParameterType, pk, la)).ToArray();
+                if (m.Invoke(null, args) is ILearnGroup g) return g;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    static (HashSet<int>? moves, string note) GroupPool(PKM pk)
+    {
+        var la = new LegalityAnalysis(pk);
+        if (Prop(la, "EncounterMatch") is not IEncounterTemplate enc) return (null, "no encounter template");
+        if (Prop(la, "Info") is not { } info || Prop(info, "EvoChainsAllGens") is not EvolutionHistory history) return (null, "no evolution history");
+        var group = CurrentGroup(pk, la);
+        if (group is null) return (null, "no method returning the current ILearnGroup");
+        int size = Math.Max(1, Math.Max(SafeInt(Prop(Sav!, "MaxMoveID")), (int)group.MaxMoveID)) + 1;
+        var flags = new bool[size + 64];
+        int groups = 0;
+        for (var g = group; g is not null && groups < 12; groups++)
+        {
+            g.GetAllMoves(flags, pk, history, enc, MoveSourceType.All, LearnOption.Current);
+            g = g.GetPrevious(pk, history, enc, LearnOption.Current);
+        }
+        var set = new HashSet<int>();
+        for (int i = 1; i < flags.Length; i++) if (flags[i]) set.Add(i);
+        return (set.Count > 0 ? set : null, $"{groups} group(s) walked, {set.Count} moves");
+    }
+
     static readonly Dictionary<string, HashSet<int>> MoveCache = new();
 
     static string MoveKey(PKM pk) => string.Join("|", pk.Species, Prop(pk, "Form"), pk.CurrentLevel,
@@ -1096,6 +1173,8 @@ public static partial class Engine
         // Moves the Pokémon can learn from any source count as legal choices even when the matched encounter
         // (e.g. a Hyperspace wild encounter) insists on its own starting moves.
         try { if (PoolMoves(pk) is { } learnable) set.UnionWith(learnable); } catch { }
+        try { if (GroupPool(pk).moves is { } all) set.UnionWith(all); } catch { }
+        try { if (LevelUpPool(pk).moves is { } lvl) set.UnionWith(lvl); } catch { }
         // If the probe accepts nothing beyond the Pokémon's own moves, the probe itself is failing (not the Pokémon),
         // so return null and let the editor offer the full move list instead of a list of 4.
         var own = MoveProps.Select(n => SafeInt(Prop(pk, n))).Where(x => x > 0).ToHashSet();
@@ -1566,6 +1645,7 @@ public static partial class Engine
             FixNames(c, changed);
             if (shiny) SetShiny(c, true);
             if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
+            ApplyPlusFlags(c, false);   // current PKHeX requires Plus/mastery flags for the moves it generates
             c.RefreshChecksum();
             var la = new LegalityAnalysis(c);
             if (first) { report = la.Report(); first = false; }
