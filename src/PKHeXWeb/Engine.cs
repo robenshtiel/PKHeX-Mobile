@@ -717,7 +717,7 @@ public static partial class Engine
         int species = orig.Species, form = Math.Max(0, SafeInt(Prop(orig, "Form"))), level = Math.Max(1, (int)orig.CurrentLevel);
         var tmpl = Template(species, form);
         if (tmpl is null) return (null, "", new List<string>());
-        var encs = FindEncounters(tmpl);
+        var encs = FindEncountersAny(tmpl);
         bool alphaGame = AlphaSupported(), alpha = Prop(orig, "IsAlpha") is true;
         int metLoc = SafeInt(Prop(orig, "MetLocation") ?? Prop(orig, "Met_Location"));
         int ver = SafeInt(Prop(orig, "Version") ?? Prop(orig, "Game"));
@@ -1596,7 +1596,43 @@ public static partial class Engine
 
     // GenerateEncounters' signature has changed between PKHeX versions (array, IReadOnlyList,
     // ReadOnlyMemory for moves; one version or a list of versions), so build the arguments at runtime.
-    static List<IEncounterable> FindEncounters(PKM template)
+    static List<IEncounterable> FindEncounters(PKM template) => FindEncounters(template, null);
+
+    // Other games of the same generation (same Pokémon file format), e.g. R/S/E when the save is FireRed. Used only when the
+    // save's own game has no encounter: such Pokémon are legal when they were caught in another game and traded over.
+    static GameVersion[] CrossVersions()
+    {
+        string[] names = Sav!.Generation switch
+        {
+            3 => ["S", "R", "E", "FR", "LG"],
+            4 => ["D", "P", "Pt", "HG", "SS"],
+            5 => ["B", "W", "B2", "W2"],
+            6 => ["X", "Y", "OR", "AS"],
+            7 => ["SN", "MN", "US", "UM"],
+            8 => ["SW", "SH", "BD", "SP"],
+            9 => ["SL", "VL", "ZA"],
+            _ => [],
+        };
+        return names.Select(n => Enum.TryParse<GameVersion>(n, out var v) ? (GameVersion?)v : null)
+            .Where(v => v is not null && v.Value != Sav.Version).Select(v => v!.Value).Distinct().ToArray();
+    }
+
+    // Native encounters first; only if the save's own game has none, look in the other games of the generation.
+    static List<IEncounterable> FindEncountersAny(PKM template)
+    {
+        var native = FindEncounters(template, null);
+        if (native.Count > 0) return native;
+        var others = CrossVersions();
+        return others.Length == 0 ? native : FindEncounters(template, others);
+    }
+
+    static bool IsCrossGame(IEncounterable enc)
+    {
+        var v = Prop(enc, "Version");
+        return v is not null && SafeInt(v) > 0 && SafeInt(v) != SafeInt(Sav!.Version);
+    }
+
+    static List<IEncounterable> FindEncounters(PKM template, GameVersion[]? versions)
     {
         var result = new List<IEncounterable>();
         var t = typeof(SaveFile).Assembly.GetType("PKHeX.Core.EncounterMovesetGenerator");
@@ -1606,7 +1642,7 @@ public static partial class Engine
             if (m.Name != "GenerateEncounters") continue;
             var ps = m.GetParameters();
             if (ps.Length != 3 || ps[0].ParameterType != typeof(PKM)) continue;
-            object? moves = MakeMoves(ps[1].ParameterType), vers = MakeVersions(ps[2].ParameterType);
+            object? moves = MakeMoves(ps[1].ParameterType), vers = MakeVersions(ps[2].ParameterType, versions);
             if (moves is null || vers is null) continue;
             try
             {
@@ -1629,11 +1665,11 @@ public static partial class Engine
         return null;
     }
 
-    static object? MakeVersions(Type t)
+    static object? MakeVersions(Type t, GameVersion[]? over = null)
     {
-        var v = Sav!.Version;
-        if (t == typeof(GameVersion)) return v;
-        if (t == typeof(GameVersion[]) || t.IsAssignableFrom(typeof(GameVersion[]))) return new[] { v };
+        var all = over is { Length: > 0 } ? over : new[] { Sav!.Version };
+        if (t == typeof(GameVersion)) return all[0];
+        if (t == typeof(GameVersion[]) || t.IsAssignableFrom(typeof(GameVersion[]))) return all;
         return null;
     }
 
@@ -1656,7 +1692,7 @@ public static partial class Engine
         {
             if (Sav is null) return NoSave();
             if (species < 1 || species >= GameInfo.Strings.Species.Count()) return Err("Invalid species number.");
-            Encs = FindEncounters(Template(species, 0)!);
+            Encs = FindEncountersAny(Template(species, 0)!);
             EncsSpecies = species;
             var list = Encs.Select((e, i) => new
             {
@@ -1741,6 +1777,15 @@ public static partial class Engine
         catch { }
     }
 
+    // Evolutions that count something (Rage Fist uses, damage taken, critical hits) store it in the form argument, and the
+    // required value differs per species. Rather than hard-coding per game, set it directly (and the Rage Fist counter if
+    // this PKHeX version has one separately).
+    static void SetFormArg(PKM pk, int value)
+    {
+        TrySet(pk, ["FormArgument"], value);
+        if (pk.Species == 979 || pk.Species == 57) TrySet(pk, ["RageFistTimes"], value);
+    }
+
     // Builds a Pokémon from one encounter, adjusts it to the wanted species/level, and returns it only if it passes the legality check.
     static (PKM? pk, string report) Build(IEncounterable enc, int species, int level, bool shiny, bool allowFix = false)
     {
@@ -1767,6 +1812,7 @@ public static partial class Engine
                 // to species that only have one form.
                 if (FormCountOf(species) <= 1 && SafeInt(Prop(c, "Form")) > 0) TrySet(c, ["Form"], 0);
                 Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
+                SetFormArg(c, 0);   // the earlier stage's counter doesn't apply to the evolved species
             }
             FixNames(c, changed);
             if (shiny) SetShiny(c, true);
@@ -1790,6 +1836,13 @@ public static partial class Engine
                     x => { ForceTraded(x); SetLevelUpMoves(x); },
                     x => { ForceTraded(x); TrySet(x, ["HeldItem"], 537); },                        // Prism Scale (Feebas)
                 };
+                foreach (var arg in new[] { 1, 3, 20, 49 })   // Sirfetch'd crits, Annihilape Rage Fist, Runerigus damage...
+                {
+                    int a = arg;
+                    variants.Add(x => { SetFormArg(x, a); if (x.Species == 979) x.Move1 = 889; });
+                    variants.Add(x => { ForceTraded(x); SetFormArg(x, a); if (x.Species == 979) x.Move1 = 889; });
+                    variants.Add(x => { ForceTraded(x); SetFormArg(x, a); SetLevelUpMoves(x); if (x.Species == 979) x.Move1 = 889; });
+                }
                 for (int vi = 0; vi < variants.Count; vi++)
                 {
                     try
@@ -1868,26 +1921,26 @@ public static partial class Engine
             var alphaGame = AlphaSupported();
             int forms = FormCountOf(species);
             string reason = "no encounter found";
-            PKM? best = null; var gotShiny = false;
+            PKM? best = null; var gotShiny = false, gotCross = false;
 
             foreach (var fix in new[] { false, true })
             {
                 for (int form = 0; form < forms && best is null; form++)
                 {
-                    var encs = FindEncounters(Template(species, form)!)
+                    var encs = FindEncountersAny(Template(species, form)!)
                         .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0).Take(80).ToList();
                     if (encs.Count == 0) continue;
                     if (shiny)
                         foreach (var enc in encs)
                         {
                             var (pk, rep) = Build(enc, species, 1, true, fix);
-                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; break; }
+                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; gotCross = IsCrossGame(enc); break; }
                         }
                     if (best is null)
                         foreach (var enc in encs)
                         {
                             var (pk, rep) = Build(enc, species, 1, false, fix);
-                            if (pk is not null) { best = pk; break; }
+                            if (pk is not null) { best = pk; gotCross = IsCrossGame(enc); break; }
                             if (fix && reason == "no encounter found") reason = FirstProblem(rep);
                         }
                 }
@@ -1895,7 +1948,7 @@ public static partial class Engine
             }
             if (best is null) return Err(reason);
             Store(best, box, slot);
-            return J(new { ok = true, shiny = gotShiny });
+            return J(new { ok = true, shiny = gotShiny, cross = gotCross });
         }
         catch (Exception e) { return Err(e.Message); }
     }
@@ -1909,7 +1962,7 @@ public static partial class Engine
             if (box < 0 || box >= Sav.BoxCount || slot < 0 || slot >= Sav.BoxSlotCount) return Err("Invalid box slot.");
             if (species < 1 || species >= GameInfo.Strings.Species.Count()) return Err("Invalid species number.");
             if (level < 1 || level > 100) return Err("Level must be 1-100.");
-            if (EncsSpecies != species) { Encs = FindEncounters(Template(species, 0)!); EncsSpecies = species; }
+            if (EncsSpecies != species) { Encs = FindEncountersAny(Template(species, 0)!); EncsSpecies = species; }
             if (Encs.Count == 0) return Err("No legal encounter found for that species in this game.");
 
             // encounter >= 0: use that one. Otherwise try encounters in order (capped, so it stays fast in the browser).
@@ -1917,7 +1970,7 @@ public static partial class Engine
             var candidates = encounter >= 0 && encounter < Encs.Count ? [Encs[encounter]]
                 : Encs.Where(x => !alphaGame || (Prop(x, "IsAlpha") is true) == alpha).Take(80).ToList();
             if (candidates.Count == 0) return Err(alpha ? "No Alpha encounter found for that species in this game." : "No legal encounter found for that species in this game.");
-            string firstReport = "";
+            string firstReport = "", fixedReport = "";
             foreach (var enc in candidates)
             {
                 var (pk, report) = Build(enc, species, level, shiny);
@@ -1925,19 +1978,19 @@ public static partial class Engine
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa && pa != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
-                return J(new { ok = true, encounter = EncName(enc) });
+                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc) });
             }
             // Second pass: let the auto-legaliser's fixes and special-evolution state (traded, Rage Fist) be applied.
             foreach (var enc in candidates.Take(25))
             {
                 var (pk, report) = Build(enc, species, level, shiny, true);
-                if (pk is null) continue;
+                if (pk is null) { if (!string.IsNullOrEmpty(report)) fixedReport = report; continue; }
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa2 && pa2 != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
-                return J(new { ok = true, encounter = EncName(enc) });
+                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc) });
             }
-            return Err("Couldn't build a legal version at that level.\n" + firstReport);
+            return Err("Couldn't build a legal version at that level.\n" + (fixedReport != "" ? fixedReport : firstReport));
         }
         catch (Exception e) { return Err(e.Message); }
     }
