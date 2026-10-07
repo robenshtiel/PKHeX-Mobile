@@ -1617,19 +1617,67 @@ public static partial class Engine
             .Where(v => v is not null && v.Value != Sav.Version).Select(v => v!.Value).Distinct().ToArray();
     }
 
-    // Native encounters first; only if the save's own game has none, look in the other games of the generation.
+    static bool IsSwsh() => Sav is not null && Sav.Generation == 8 && Sav.Version.ToString() is "SW" or "SH" or "SWSH";
+
+    static bool IsGo(IEncounterable enc) => string.Equals(Prop(enc, "Version")?.ToString(), "GO", StringComparison.Ordinal);
+
+    // Sword/Shield can hold Pokémon caught in Pokémon GO (they arrive through HOME), so those encounters are added after the
+    // game's own. For any save, if the game has no encounter at all, the other games of the generation are searched instead.
     static List<IEncounterable> FindEncountersAny(PKM template)
     {
         var native = FindEncounters(template, null);
+        if (IsSwsh() && Enum.TryParse<GameVersion>("GO", out var go))
+        {
+            try
+            {
+                foreach (var e in FindEncounters(template, new[] { go }))
+                    if (!native.Contains(e)) native.Add(e);
+            }
+            catch { }
+        }
         if (native.Count > 0) return native;
         var others = CrossVersions();
         return others.Length == 0 ? native : FindEncounters(template, others);
     }
 
+    // Keeps the list short for the browser without letting a long list of native encounters push the GO ones out.
+    static List<IEncounterable> Cap(IEnumerable<IEncounterable> source, int max)
+    {
+        var all = source.ToList();
+        var go = all.Where(IsGo).Take(25).ToList();
+        var rest = all.Where(x => !IsGo(x)).Take(Math.Max(1, max - go.Count)).ToList();
+        rest.AddRange(go);
+        return rest;
+    }
+
+    // Pokémon from GO have no HOME tracker when created here (left blank on purpose), so PKHeX flags them. That one flag is
+    // expected and is not treated as a failure; any other problem still is.
+    static bool OnlyTrackerProblems(LegalityAnalysis la)
+    {
+        var bad = la.Report().Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith("Invalid")).ToList();
+        return bad.Count > 0 && bad.All(l => l.Contains("tracker", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // GO PIDs follow their own rules, so a GO Pokémon that should be shiny has to be generated as shiny rather than edited afterwards.
+    static EncounterCriteria ShinyCriteria()
+    {
+        var u = EncounterCriteria.Unrestricted;
+        try
+        {
+            var t = typeof(EncounterCriteria);
+            var p = t.GetProperty("Shiny");
+            if (!t.IsValueType || p is null || !p.PropertyType.IsEnum) return u;
+            object boxed = u;
+            p.SetValue(boxed, Enum.Parse(p.PropertyType, "Always"));
+            return (EncounterCriteria)boxed;
+        }
+        catch { return u; }
+    }
+
     static bool IsCrossGame(IEncounterable enc)
     {
         var v = Prop(enc, "Version");
-        return v is not null && SafeInt(v) > 0 && SafeInt(v) != SafeInt(Sav!.Version);
+        return !IsGo(enc) && v is not null && SafeInt(v) > 0 && SafeInt(v) != SafeInt(Sav!.Version);
     }
 
     static List<IEncounterable> FindEncounters(PKM template, GameVersion[]? versions)
@@ -1836,7 +1884,7 @@ public static partial class Engine
         if (enc is not IEncounterConvertible conv) return (null, "Encounter can't be converted.");
         if (Sav!.Language < 1 || Sav.Language > 12) TrySet(Sav, ["Language"], 2);
         PKM pk;
-        try { pk = conv.ConvertToPKM(Sav!, EncounterCriteria.Unrestricted); }
+        try { pk = conv.ConvertToPKM(Sav!, shiny && IsGo(enc) ? ShinyCriteria() : EncounterCriteria.Unrestricted); }
         catch (Exception e) { return (null, e.Message); }
         if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
         FixHandler(pk, enc);
@@ -1861,13 +1909,13 @@ public static partial class Engine
                 if (!keepAbility) Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
             }
             FixNames(c, changed);
-            if (shiny) SetShiny(c, true);
+            if (shiny && !c.IsShiny) SetShiny(c, true);
             if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
             ApplyPlusFlags(c, false);   // current PKHeX requires Plus/mastery flags for the moves it generates
             c.RefreshChecksum();
             var la = new LegalityAnalysis(c);
             if (first) { report = la.Report(); first = false; }
-            if (la.Valid) return (c, "");
+            if (la.Valid || (allowFix && IsGo(enc) && OnlyTrackerProblems(la))) return (c, "");
             if (allowFix)
             {
                 // Evolved species often need small fixes (moves, relearn, flags) that the auto-legaliser knows how to make,
@@ -1921,7 +1969,7 @@ public static partial class Engine
                         var fixedPk = LegaliseInPlace(d, new List<string>());
                         ApplyPlusFlags(fixedPk, false); fixedPk.RefreshChecksum();
                         var fl = new LegalityAnalysis(fixedPk);
-                        if (fl.Valid) return (fixedPk, "");
+                        if (fl.Valid || (IsGo(enc) && OnlyTrackerProblems(fl))) return (fixedPk, "");
                         var rep2 = fl.Report(); int bad = rep2.Split('\n').Count(l => l.TrimStart().StartsWith("Invalid"));
                         if (fixReport == "" || bad < fixBad) { fixReport = rep2; fixBad = bad; }   // report from the closest attempt
                     }
@@ -1992,26 +2040,26 @@ public static partial class Engine
             var alphaGame = AlphaSupported();
             int forms = FormCountOf(species);
             string reason = "no encounter found";
-            PKM? best = null; bool gotShiny = false, gotCross = false;
+            PKM? best = null; bool gotShiny = false, gotCross = false, gotGo = false;
 
             foreach (var fix in new[] { false, true })
             {
                 for (int form = 0; form < forms && best is null; form++)
                 {
-                    var encs = FindEncountersAny(Template(species, form)!)
-                        .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0).Take(80).ToList();
+                    var encs = Cap(FindEncountersAny(Template(species, form)!)
+                        .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0), 80);
                     if (encs.Count == 0) continue;
                     if (shiny)
                         foreach (var enc in encs)
                         {
                             var (pk, rep) = Build(enc, species, 1, true, fix);
-                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; gotCross = IsCrossGame(enc); break; }
+                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; gotCross = IsCrossGame(enc); gotGo = IsGo(enc); break; }
                         }
                     if (best is null)
                         foreach (var enc in encs)
                         {
                             var (pk, rep) = Build(enc, species, 1, false, fix);
-                            if (pk is not null) { best = pk; gotCross = IsCrossGame(enc); break; }
+                            if (pk is not null) { best = pk; gotCross = IsCrossGame(enc); gotGo = IsGo(enc); break; }
                             if (fix && reason == "no encounter found")
                             {
                                 reason = FirstProblem(rep);
@@ -2024,7 +2072,7 @@ public static partial class Engine
             }
             if (best is null) return Err(reason);
             Store(best, box, slot);
-            return J(new { ok = true, shiny = gotShiny, cross = gotCross });
+            return J(new { ok = true, shiny = gotShiny, cross = gotCross, go = gotGo });
         }
         catch (Exception e) { return Err(e.Message); }
     }
@@ -2044,7 +2092,7 @@ public static partial class Engine
             // encounter >= 0: use that one. Otherwise try encounters in order (capped, so it stays fast in the browser).
             var alphaGame = AlphaSupported();
             var candidates = encounter >= 0 && encounter < Encs.Count ? [Encs[encounter]]
-                : Encs.Where(x => !alphaGame || (Prop(x, "IsAlpha") is true) == alpha).Take(80).ToList();
+                : Cap(Encs.Where(x => !alphaGame || (Prop(x, "IsAlpha") is true) == alpha), 80);
             if (candidates.Count == 0) return Err(alpha ? "No Alpha encounter found for that species in this game." : "No legal encounter found for that species in this game.");
             string firstReport = "", fixedReport = "";
             foreach (var enc in candidates)
@@ -2054,17 +2102,17 @@ public static partial class Engine
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa && pa != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
-                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc) });
+                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc), go = IsGo(enc) });
             }
             // Second pass: let the auto-legaliser's fixes and special-evolution state (traded, Rage Fist) be applied.
-            foreach (var enc in candidates.Take(25))
+            foreach (var enc in candidates.Where(x => !IsGo(x)).Take(25).Concat(candidates.Where(IsGo)))
             {
                 var (pk, report) = Build(enc, species, level, shiny, true);
                 if (pk is null) { if (!string.IsNullOrEmpty(report)) fixedReport = report; continue; }
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa2 && pa2 != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
-                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc) });
+                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc), go = IsGo(enc) });
             }
             return Err("Couldn't build a legal version at that level.\n" + (fixedReport != "" ? fixedReport : firstReport));
         }
