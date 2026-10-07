@@ -19,7 +19,7 @@ const listOpts = (k) => (optCache[k] ??= N[k].map((n, i) => `<option value="${i}
 const LISTS = [[/^Species$/, 'species'], [/^(Move[1-4]|RelearnMove[1-4]|AlphaMove)$/, 'moves'], [/^(HeldItem|Item)$/, 'items'], [/^Ability$/, 'abilities'], [/^(Nature|StatNature)$/, 'natures']];
 const NUM = /^(Byte|SByte|U?Int(16|32|64))$/;
 const TAB = {
-  Main: /^(Species|Nickname|IsNicknamed|IsShiny|IsAlpha|AlphaMove|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
+  Main: /^(Species|Nickname|IsNicknamed|IsShiny|IsAlpha|AlphaMove|CurrentLevel|EXP|Nature|StatNature|Ability|AbilityNumber|HeldItem|Gender|Form|FormArgument|IsEgg|CurrentFriendship|HeightScalar|WeightScalar|Scale|Tera\w*|PID|EncryptionConstant)$/,
   Moves: /^(Move[1-4]|RelearnMove[1-4])(_PP|_PPUps)?$/,
   Cosmetic: /^(Contest|Marking|Ribbon|AffixedRibbon|HasBattle|HasContest)/,
   Met: /^(Ball|Version|Fateful|Met|Egg)/,
@@ -63,6 +63,15 @@ function loadGrid() {
     ? `<button class="slot${s.slot === S.slot ? ' sel' : ''}" data-s="${s.slot}" aria-label="Empty slot"></button>`
     : `<button class="slot f${s.slot === S.slot ? ' sel' : ''}" data-s="${s.slot}" aria-label="${esc(s.nick)} level ${s.level}">${img(s.id, s.shiny)}<i class="lg ${s.legal ? 'ok' : 'bad'}" title="${s.legal ? 'Legal' : 'Illegal'}"></i>${s.shiny ? '<i class="sh" title="Shiny">★</i>' : ''}${s.alpha ? '<i class="al" title="Alpha">α</i>' : ''}<span>${s.level}</span></button>`).join('');
   $('boxsel').value = S.box;
+  syncTools();
+}
+
+// Copy / Delete only make sense with a Pokémon selected (the toolbar is built at the end of this file).
+function syncTools() {
+  const c = $('tbcopy'), d = $('tbdel'); if (!c || !d) return;
+  const has = S.slot >= 0 && !!S.slots[S.slot] && !S.slots[S.slot].empty;
+  c.disabled = !has; d.disabled = !has || S.box < 0;
+  d.title = has && S.box < 0 ? 'Deleting from the party isn’t supported yet' : 'Delete the selected Pokémon';
 }
 
 function setup(info) {
@@ -88,7 +97,7 @@ function showEmpty() {
     ? '<div class="top"><div><h2>Empty party slot</h2><small>Adding to the party isn’t supported yet. Use a box.</small></div><button class="btn cl" id="cl">Close</button></div>'
     : `<div class="top"><div><h2>Empty slot</h2><small>Box ${S.box + 1}, slot ${S.slot + 1}</small></div><button class="btn cl" id="cl">Close</button></div>
 <div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label><label class="f chk"><input type="checkbox" id="nsh">Shiny</label>${E.AlphaSupported() ? '<label class="f chk"><input type="checkbox" id="nal">Alpha</label>' : ''}</div>
-<p><button class="btn pri" id="create">Create Pokémon</button></p>
+<p><button class="btn pri" id="create">Create Pokémon</button> <button class="btn" id="sdbtn">Import Showdown set…</button></p>
 <label class="f">Or import a Pokémon file<input type="file" id="impf"></label>`;
   if ($('nsp')) { $('nsp').value = 25; loadEncounters(); }
   enhance(ed);
@@ -261,6 +270,9 @@ function combo(sel) {
 }
 const enhance = (root) => root.querySelectorAll('select').forEach((s) => { if (COMBO_IDS.has(s.id) || COMBO.test(s.dataset.p ?? '')) combo(s); });
 
+// Evolutions that keep a counter in the form argument; the minimum PKHeX requires once evolved (same table as EvoArg in Engine.cs).
+const FARG_MIN = { 865: 3, 867: 49, 979: 20, 899: 20, 902: 294, 983: 3 };
+
 // <species number>-<species name>-<ball>-<origin game>
 const exportName = () => {
   const id = +(by('Species')?.value ?? 0);
@@ -270,6 +282,50 @@ const exportName = () => {
   return [String(id).padStart(4, '0'), clean(N.species[id]) || 'Unknown', clean(ball), clean(game)].filter(Boolean).join('-');
 };
 
+// ---------- Showdown set import / export (one Pokémon) ----------
+document.head.appendChild(Object.assign(document.createElement('style'), { textContent:
+  '.top{flex-wrap:wrap}.top>div:nth-child(2){min-width:140px}' +
+  '#sdm{width:min(560px,96vw);max-height:90vh;padding:0;border:1px solid var(--bd);border-radius:14px;background:var(--pn);color:var(--tx)}#sdm::backdrop{background:#0009}' +
+  '#sdm .sdw{display:flex;flex-direction:column;max-height:90vh}#sdm .sdh{padding:12px 16px 0}#sdm .sdh h3{margin:0 0 4px;font-size:16px}' +
+  '#sdm .sdb{padding:10px 16px;display:flex;flex-direction:column;gap:8px;overflow:auto}' +
+  '#sdm textarea{width:100%;min-height:240px;resize:vertical;background:var(--in);border:1px solid var(--bd);border-radius:10px;padding:10px;color:var(--tx);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}' +
+  '#sdm .sdf{display:flex;gap:8px;align-items:center;padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--bd)}#sdm .sp{flex:1}' }));
+
+function openShowdown() {
+  let dlg = $('sdm');
+  if (!dlg) {
+    dlg = document.createElement('dialog'); dlg.id = 'sdm'; document.body.appendChild(dlg);
+    dlg.innerHTML = `<div class="sdw"><div class="sdh"><h3>Showdown set</h3><p class="hint" id="sdhint" style="margin:0"></p></div>
+<div class="sdb"><textarea id="sdtxt" spellcheck="false" autocapitalize="off" aria-label="Showdown set"></textarea><p id="sdres" class="hint" style="margin:0" aria-live="polite"></p></div>
+<div class="sdf"><button class="btn" data-sd="close">Close</button><span class="sp"></span><button class="btn" data-sd="copy">Copy</button><button class="btn pri" data-sd="import">Import</button></div></div>`;
+    dlg.addEventListener('click', async (e) => {
+      if (e.target === dlg) return dlg.close();
+      const a = e.target.closest('button')?.dataset.sd; if (!a) return;
+      const txt = $('sdtxt');
+      if (a === 'close') return dlg.close();
+      if (a === 'copy') {
+        try { await navigator.clipboard.writeText(txt.value); toast('Copied.'); }
+        catch { txt.select(); toast(document.execCommand('copy') ? 'Copied.' : 'Select the text and copy it manually.'); }
+        return;
+      }
+      const text = txt.value.trim(); if (!text) return toast('Paste a Showdown set first.');
+      const wasEmpty = !!S.slots[S.slot]?.empty;
+      const r = call(() => J(E.ImportShowdown(text, S.box, S.slot)));
+      if (!r.ok) { $('sdres').className = 'bad'; $('sdres').textContent = r.error; return; }
+      dlg.close(); legalDirty = true; S.note = ''; if (wasEmpty) S.tab = 'Main';
+      refresh();
+      toast(r.skipped?.length ? `Imported. Couldn’t read: ${r.skipped.join('; ')}` : 'Imported.');
+    });
+  }
+  const empty = !!S.slots[S.slot]?.empty;
+  const r = empty ? { ok: true, text: '' } : call(() => J(E.ExportShowdown(S.box, S.slot)));
+  $('sdtxt').value = r.text ?? '';
+  $('sdtxt').placeholder = 'Species @ Item\nAbility: …\nLevel: 50\nEVs: 252 Atk / 4 Def / 252 Spe\nAdamant Nature\n- Move 1\n- Move 2';
+  $('sdhint').textContent = empty ? 'Paste a set to create a Pokémon here. A legal encounter is picked automatically.' : 'Edit the text and press Import to apply it to this Pokémon (undo with ↶).';
+  $('sdres').className = 'hint'; $('sdres').textContent = r.ok ? '' : r.error;
+  dlg.showModal();
+}
+
 function view() {
   const P = S.props, m = by('Species'), lvl = by('CurrentLevel')?.value ?? '?';
   const id = +(m?.value ?? 0), name = N.species[id] ?? '';
@@ -277,9 +333,11 @@ function view() {
   const list = (re) => P.filter((p) => re.test(p.name));
   let h = '';
   if (S.tab === 'Main') {
-    const ORDER = ['Species', 'Form', 'Nickname', 'IsNicknamed', 'Gender', 'IsShiny', 'IsAlpha', 'AlphaMove', 'IsEgg', 'CurrentLevel', 'EXP', 'Nature', 'StatNature', 'Ability', 'AbilityNumber', 'HeldItem', 'CurrentFriendship', 'HeightScalar', 'WeightScalar', 'Scale', 'PID', 'EncryptionConstant'];
+    const ORDER = ['Species', 'Form', 'FormArgument', 'Nickname', 'IsNicknamed', 'Gender', 'IsShiny', 'IsAlpha', 'AlphaMove', 'IsEgg', 'CurrentLevel', 'EXP', 'Nature', 'StatNature', 'Ability', 'AbilityNumber', 'HeldItem', 'CurrentFriendship', 'HeightScalar', 'WeightScalar', 'Scale', 'PID', 'EncryptionConstant'];
     const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
-    h = `<div class="fg">${list(TAB.Main).sort((a, b) => rank(a.name) - rank(b.name)).map(ctl).join('')}</div>`;
+    const fa = by('FormArgument'), need = FARG_MIN[id];
+    h = `<div class="fg">${list(TAB.Main).sort((a, b) => rank(a.name) - rank(b.name)).map(ctl).join('')}</div>`
+      + (fa && need && +fa.value < need ? `<p class="hint">${esc(name)} needs a form argument of at least ${need} to be legal.</p>` : '');
   }
   if (S.tab === 'Stats') {
     const ht = (x) => by('HT_' + x), hasHT = ST.some((x) => ht(x)), evCap = by('EV_HP')?.max === '252';
@@ -323,7 +381,7 @@ function view() {
   if (S.tab === 'All fields') h = `<label class="f">Search<input id="q" type="search" placeholder="Filter fields"></label><div class="fg all" style="margin-top:10px">${P.map(ctl).join('')}</div>`;
   if (S.tab === 'Legality') { const r = call(() => J(E.Legality(S.box, S.slot))); h = r.ok ? `<p class="${r.valid ? 'ok' : 'bad'}">${r.valid ? 'Legal' : 'Not legal'}</p><div style="margin:8px 0"><button class="btn pri" id="autofix"${r.valid ? ' disabled title="Already legal"' : ''}>Auto-legalise</button></div>${S.note ? `<p class="hint">${esc(S.note)}</p>` : ''}<pre>${esc(r.report)}</pre>` : `<p class="bad">${esc(r.error)}</p>`; }
   const tabs = ['Main', 'Stats', 'Moves', 'Cosmetic', 'Met', 'OT / Misc', 'All fields', 'Legality'];
-  $('ed').innerHTML = `<div class="top"><div class="av">${img(id, shiny)}</div><div><h2>${esc(nick)}${shiny ? ' ✦' : ''}</h2><small>${esc(name)} · Lv ${esc(lvl)}</small></div><button class="btn" id="exp">Export</button><button class="btn cl" id="cl">Close</button></div>
+  $('ed').innerHTML = `<div class="top"><div class="av">${img(id, shiny)}</div><div><h2>${esc(nick)}${shiny ? ' ✦' : ''}</h2><small>${esc(name)} · Lv ${esc(lvl)}</small></div><button class="btn" id="sdbtn">Showdown</button><button class="btn" id="exp">Export</button><button class="btn cl" id="cl">Close</button></div>
 <div class="tabs" role="tablist">${tabs.map((t) => `<button role="tab" class="${t === S.tab ? 'on' : ''}" data-t="${t}">${t}</button>`).join('')}</div>${h}`;
   $('ed').querySelectorAll('select[data-v]').forEach((s) => { s.value = s.dataset.v; });
   enhance($('ed'));
@@ -402,6 +460,7 @@ $('ed').addEventListener('click', (e) => {
   else if (t.dataset.up) edit(t.dataset.up, t.dataset.x);
   else if (t.dataset.max) { const v = maxFor(t.dataset.max); if (v != null) edit(t.dataset.max, v); }
   else if (t.id === 'rbopen') openRibbons();
+  else if (t.id === 'sdbtn') openShowdown();
   else if (t.id === 'autofix') autoLegalise();
 });
 {
@@ -632,7 +691,7 @@ function trOpen() {
     const list = plan.species.slice(0, plan.capacity);
     if (!confirm(`Fill up to ${list.length} slots from Box 1, slot 1 with a legal ${shiny ? 'shiny ' : ''}living dex? Pokémon in those slots will be replaced (undo only covers the last 200 edits).`)) return;
     running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
-    for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = true;
+    for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = true;
     let placed = 0, shinies = 0, cross = 0, goCount = 0; const skipped = [];
     for (let i = 0; i < list.length && !stop; i++) {
       stat.textContent = `Building ${i + 1} / ${list.length}…`;
@@ -640,7 +699,7 @@ function trOpen() {
       const r = call(() => J(E.LivingDexAdd(placed, list[i], shiny)));
       if (r.ok) { placed++; if (r.shiny) shinies++; if (r.cross) cross++; if (r.go) goCount++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
     }
-    running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = false;
+    running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = false;
     stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed}` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
       + (goCount ? `, ${goCount} from Pokémon GO` : '')
       + (cross ? `, ${cross} from another game of this generation (traded in)` : '')
@@ -655,7 +714,7 @@ function trOpen() {
     if (!plan.slots.length) return toast('No Pokémon to check.');
     if (!confirm(`Check ${plan.slots.length} Pokémon and automatically fix any that are illegal? Fixes can change moves, met data and other fields (undo only covers the last 200 edits).`)) return;
     running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
-    for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = true;
+    for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = true;
     let legal = 0, fixed = 0, partial = 0, failed = 0, done = 0;
     for (const [bx, sl] of plan.slots) {
       if (stop) break;
@@ -670,12 +729,222 @@ function trOpen() {
       else failed++;
     }
     running = false; stopBtn.hidden = true;
-    for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = false;
+    for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = false;
     stat.textContent = `${stop ? `Stopped after ${done}. ` : ''}${legal} already legal, ${fixed} fixed, ${partial} improved but still need attention, ${failed} couldn't be fixed automatically.`;
     legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
   }
   $('ldall').onclick = legaliseAll;
   $('ldn').onclick = () => livingDex(false);
   $('lds').onclick = () => livingDex(true);
+}
+// ---- Tools menu: batch editor (PKHeX-style filters and instructions) ----
+{
+  const BE = { running: false, stop: false, script: '', scope: 'box' };
+  const PLACEHOLDER = '# One instruction per line, for example:\n=Species=Pikachu\n.CurrentLevel=100\n.IsShiny=True';
+  const HELP = `One instruction per line. Lines starting with # are ignored.
+
+FILTERS (only Pokémon that pass every filter are changed)
+=Species=Pikachu      equals
+!Species=Pikachu      does not equal
+>CurrentLevel=50      greater than (also <  >=  <=  ≥  ≤)
+=Legal=False          only illegal Pokémon
+
+INSTRUCTIONS
+.CurrentLevel=100     set a value
+.Move1=Thunderbolt    names work for species, moves, items,
+.Nature=Adamant       abilities, natures, balls, languages, forms…
+.IsShiny=True
+.CurrentLevel=+5      add / subtract / multiply / divide  (+ - * /)
+.Species=$rand        random value for that field
+
+SPECIAL FIELDS
+.Moves=$suggest       best moveset for the encounter
+.RelearnMoves=$suggest
+.Ribbons=$suggest     (or $all / $none)
+.IVs=31   .IVs=$rand  .EVs=0   .EVs=$rand
+
+Fields that don't exist for a Pokémon's format are skipped and listed in the result.
+Preview shows what would change; Run applies it as one Undo step.`;
+  const show = (h) => { $('beres').innerHTML = h; };
+  const busy = (on) => {
+    BE.running = on; $('bestop').hidden = !on;
+    for (const id of ['bepre', 'berun', 'beadd', 'bescope']) $(id).disabled = on;
+    $('bescript').readOnly = on;
+  };
+  const summary = (f, apply) => {
+    let h = `<p><b>${apply ? 'Done.' : 'Preview.'}</b> Checked ${f.scanned}, matched ${f.matched}, ${apply ? 'changed' : 'would change'} ${f.modified}${f.unchanged ? ` (${f.unchanged} unchanged)` : ''}.</p>`;
+    h += f.samples.map((s) => `<div class="bes"><b>${esc(s.name)}</b> <span class="pth">${esc(s.at)}</span><br>${s.changes.map((c) => esc(c)).join(' · ')}</div>`).join('');
+    if (f.modified > f.samples.length) h += `<p class="hint">…and ${f.modified - f.samples.length} more.</p>`;
+    if (f.errors.length) h += `<p class="bad">Problems:</p><ul>${f.errors.map((x) => `<li>${esc(x.message)} <span class="pth">×${x.count}, first at ${esc(x.at)}</span></li>`).join('')}</ul>`;
+    if (f.missing.length) h += `<p class="hint">Skipped where the field doesn't exist for that Pokémon's format: ${f.missing.map((m) => `${esc(m.name)} (${m.count})`).join(', ')}.</p>`;
+    return h;
+  };
+
+  async function run(apply) {
+    if (BE.running) return;
+    const script = $('bescript').value, scope = $('bescope').value;
+    BE.script = script; BE.scope = scope;
+    const b = call(() => J(E.BatchBegin(script, scope, S.box)));
+    if (!b.ok) return show(`<p class="bad">${esc(b.error).replace(/\n/g, '<br>')}</p>`);
+    if (!b.total) { E.BatchCancel(); return show('<p class="hint">There are no slots in that range.</p>'); }
+    if (apply && !b.sets) { E.BatchCancel(); return show('<p class="bad">Nothing to run: add at least one instruction starting with “.”, for example .CurrentLevel=100</p>'); }
+    if (apply && !confirm(`Run ${b.sets} instruction${b.sets === 1 ? '' : 's'} on up to ${b.total} slots? One Undo reverts the whole batch.`)) { E.BatchCancel(); return; }
+    BE.stop = false; busy(true); $('bestop').disabled = false;
+    let done = 0, failed = '';
+    while (done < b.total && !BE.stop) {
+      const r = call(() => J(E.BatchStep(8)));
+      if (!r.ok) { failed = r.error; break; }
+      done = r.done;
+      show(`<p class="hint">${apply ? 'Running' : 'Previewing'}… ${done} / ${b.total}</p>`);
+      await new Promise((res) => setTimeout(res, 0));   // let the page repaint between chunks
+    }
+    busy(false);
+    if (failed || BE.stop) { E.BatchCancel(); return show(failed ? `<p class="bad">${esc(failed)}</p>` : '<p class="hint">Stopped. Nothing was changed.</p>'); }
+    const f = call(() => J(E.BatchFinish(apply)));
+    if (!f.ok) return show(`<p class="bad">${esc(f.error)}</p>`);
+    show(summary(f, apply));
+    if (apply && f.modified) { legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist(); }
+  }
+
+  function ensure() {
+    let dlg = $('bem'); if (dlg) return dlg;
+    dlg = document.createElement('dialog'); dlg.id = 'bem'; document.body.appendChild(dlg);
+    dlg.innerHTML = `<div class="bew"><div class="beh"><h3>Batch editor</h3><label>Apply to <select id="bescope"><option value="box"></option><option value="boxes">All boxes</option><option value="party">Party</option><option value="all">Entire save</option></select></label></div>
+<div class="beb"><div class="beadd"><select id="bemode" aria-label="Instruction type"><option value=".">Set</option><option value="=">Require =</option><option value="!">Exclude ≠</option><option value="&gt;">Require &gt;</option><option value="&lt;">Require &lt;</option><option value="≥">Require ≥</option><option value="≤">Require ≤</option></select><input id="beprop" list="beprops" placeholder="Property" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Property"><datalist id="beprops"></datalist><input id="beval" placeholder="Value" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Value"><button class="btn" id="beadd">Add</button></div>
+<textarea id="bescript" spellcheck="false" autocapitalize="off" placeholder="${esc(PLACEHOLDER)}" aria-label="Batch instructions"></textarea>
+<details><summary>Syntax</summary><pre>${esc(HELP)}</pre></details><div class="beres" id="beres" aria-live="polite"></div></div>
+<div class="bef"><button class="btn" id="beclose">Close</button><span class="sp"></span><button class="btn" id="bestop" hidden>Stop</button><button class="btn" id="bepre">Preview</button><button class="btn pri" id="berun">Run</button></div></div>`;
+    dlg.addEventListener('click', (e) => { if (e.target === dlg && !BE.running) dlg.close(); });
+    dlg.addEventListener('close', () => { BE.stop = true; BE.script = $('bescript').value; BE.scope = $('bescope').value; });
+    $('beclose').onclick = () => dlg.close();
+    $('bepre').onclick = () => run(false);
+    $('berun').onclick = () => run(true);
+    $('bestop').onclick = () => { BE.stop = true; $('bestop').disabled = true; };
+    $('beadd').onclick = () => {
+      const prop = $('beprop').value.trim(); if (!prop) return $('beprop').focus();
+      const ta = $('bescript'), line = `${$('bemode').value}${prop}=${$('beval').value.trim()}`;
+      ta.value = ta.value.replace(/\s+$/, '') + (ta.value.trim() ? '\n' : '') + line + '\n';
+      $('beval').value = ''; ta.scrollTop = ta.scrollHeight;
+    };
+    $('beval').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); $('beadd').click(); } };
+    return dlg;
+  }
+
+  $('bebtn').onclick = () => {
+    $('toolsmenu').hidden = true; $('toolsbtn').setAttribute('aria-expanded', 'false');
+    if (!S.info) return toast('Open or create a save first.');
+    const dlg = ensure();
+    const f = call(() => J(E.BatchFields()));
+    $('beprops').innerHTML = (f.props ?? []).map((n) => `<option value="${esc(n)}">`).join('');
+    $('bescope').options[0].textContent = `Current view (${S.box < 0 ? 'Party' : 'Box ' + (S.box + 1)})`;
+    $('bescope').value = BE.scope; $('bescript').value = BE.script; show('');
+    dlg.showModal();
+  };
+}
+// ---- Box tools: import / export many Pokémon files (up to one box) ----
+{
+  const MAX = 30;
+  document.head.appendChild(Object.assign(document.createElement('style'), { textContent:
+    '.mbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.mbar .hint{flex-basis:100%;margin:0}' }));
+  const bar = document.createElement('div'); bar.className = 'mbar';
+  bar.innerHTML = '<button class="btn" id="mbimp" title="Import up to 30 Pokémon files into empty slots">Import files…</button><button class="btn" id="mbexp" title="Download this box as a zip of Pokémon files">Export box…</button><input type="file" id="mbfile" multiple hidden><p class="hint" id="mbstat" hidden></p>';
+  $('hint').before(bar);
+
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (d) => { let c = ~0; for (let i = 0; i < d.length; i++) c = CRC[(c ^ d[i]) & 255] ^ (c >>> 8); return ~c >>> 0; };
+  const u16 = (v) => [v & 255, (v >> 8) & 255], u32 = (v) => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255];
+  // Minimal zip writer (stored, no compression): Pokémon files are tiny.
+  const makeZip = (files) => {
+    const te = new TextEncoder(), parts = [], cd = []; let off = 0;
+    for (const f of files) {
+      const nm = te.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+      parts.push(new Uint8Array([0x50, 0x4b, 3, 4, ...u16(20), ...u16(0x800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(nm.length), ...u16(0)]), nm, f.data);
+      cd.push(new Uint8Array([0x50, 0x4b, 1, 2, ...u16(20), ...u16(20), ...u16(0x800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(nm.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off)]), nm);
+      off += 30 + nm.length + sz;
+    }
+    const cdSize = cd.reduce((a, x) => a + x.length, 0);
+    return new Blob([...parts, ...cd, new Uint8Array([0x50, 0x4b, 5, 6, 0, 0, 0, 0, ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(off), 0, 0])], { type: 'application/zip' });
+  };
+  const clean = (x) => String(x ?? '').replace(/[\\/:*?"<>|]/g, '').trim().replace(/\s+/g, '_');
+  const say = (t, bad) => { const e = $('mbstat'); e.hidden = !t; e.className = bad ? 'hint bad' : 'hint'; e.textContent = t; };
+
+  $('mbexp').onclick = () => {
+    if (!S.info) return toast('Open or create a save first.');
+    const files = S.slots.filter((s) => !s.empty).slice(0, MAX).map((s) => ({
+      name: `${String(s.slot + 1).padStart(2, '0')}-${String(s.id).padStart(4, '0')}-${clean(N.species[s.id]) || 'Unknown'}.${E.PokemonExtension(S.box, s.slot)}`,
+      data: E.ExportPokemon(S.box, s.slot).slice(),
+    })).filter((f) => f.data.length);
+    if (!files.length) return toast('Nothing to export here.');
+    download(makeZip(files), S.box < 0 ? 'party.zip' : `box-${S.box + 1}.zip`);
+    say(`Exported ${files.length} Pokémon.`);
+  };
+
+  $('mbimp').onclick = () => (S.info ? $('mbfile').click() : toast('Open or create a save first.'));
+  $('mbfile').onchange = async (e) => {
+    let files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+    const extra = Math.max(0, files.length - MAX); files = files.slice(0, MAX);
+    const start = Math.max(0, S.box); let placed = 0, first = null, last = null, full = 0; const bad = [];
+    call(() => J(E.MultiImportBegin()));
+    for (const f of files) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const r = call(() => J(E.MultiImportNext(bytes, start)));
+      if (r.ok) { placed++; first ??= r; last = r; }
+      else if (r.full) { full = files.length - placed - bad.length; break; }
+      else bad.push(`${f.name} (${r.error})`);
+    }
+    E.MultiImportEnd();
+    const pos = (r) => `Box ${r.box + 1} slot ${r.slot + 1}`;
+    const parts = [placed ? `Imported ${placed} (${pos(first)}${placed > 1 ? ` to ${pos(last)}` : ''}).` : 'Nothing imported.'];
+    if (full) parts.push(`${full} didn’t fit: no empty slots left.`);
+    if (extra) parts.push(`Only the first ${MAX} files are used; ${extra} skipped.`);
+    if (bad.length) parts.push(`Failed: ${bad.slice(0, 3).join('; ')}${bad.length > 3 ? ` and ${bad.length - 3} more` : ''}.`);
+    say(parts.join(' '), !placed || bad.length || full);
+    if (placed) { legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist(); }
+  };
+}
+// ---- Toolbar under the top bar: copy, delete, sort all boxes ----
+{
+  document.head.appendChild(Object.assign(document.createElement('style'), { textContent:
+    '.tbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;background:var(--pn);border-bottom:1px solid var(--bd)}.tbar .hint{margin:0;flex:1;min-width:140px}' }));
+  const bar = document.createElement('div'); bar.className = 'tbar'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Box tools');
+  bar.innerHTML = `<button class="btn" id="tbcopy" title="Copy the selected Pokémon into the next empty slot" disabled>Copy</button><button class="btn" id="tbdel" title="Delete the selected Pokémon" disabled>Delete</button>
+<select class="btn" id="tbsort" aria-label="Sort all boxes"><option value="">Sort ▾</option><option value="num-asc">Numerical 1-1025</option><option value="num-desc">Numerical 1025-1</option><option value="alpha-asc">Alphabetical A-Z</option><option value="alpha-desc">Alphabetical Z-A</option><option value="lvl-asc">Level 1-100</option><option value="lvl-desc">Level 100-1</option><option value="legal">Legal first</option><option value="illegal">Illegal first</option></select><span class="hint" id="tbstat" aria-live="polite"></span>`;
+  document.querySelector('header').after(bar);
+  const say = (t) => { $('tbstat').textContent = t; };
+
+  $('tbcopy').onclick = () => {
+    if ($('tbcopy').disabled) return;
+    const r = call(() => J(E.CopySlot(S.box, S.slot)));
+    if (!r.ok) return toast(r.error);
+    loadGrid(); updateHist(); say(`Copied to Box ${r.box + 1}, slot ${r.slot + 1}.`);
+  };
+  $('tbdel').onclick = () => {
+    if ($('tbdel').disabled) return;
+    const r = call(() => J(E.DeleteSlot(S.box, S.slot)));
+    if (!r.ok) return toast(r.error);
+    legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist(); say('Deleted. Undo with ↶.');
+  };
+  $('tbsort').onchange = async (e) => {
+    const sel = e.target, mode = sel.value, label = sel.selectedOptions[0].textContent; sel.value = '';
+    if (!mode) return;
+    if (!S.info) return toast('Open or create a save first.');
+    const b = call(() => J(E.SortBegin(mode)));
+    if (!b.ok) return toast(b.error);
+    const lock = (on) => { for (const el of [document.querySelector('header'), document.querySelector('main'), bar]) el.inert = on; };
+    lock(true);
+    try {
+      for (let done = 0; done < b.total;) {
+        const r = call(() => J(E.SortStep(10)));
+        if (!r.ok) return toast(r.error);
+        done = r.done; say(`Checking legality… ${done} / ${b.total}`);
+        await new Promise((res) => setTimeout(res, 0));   // let the page repaint between chunks
+      }
+      const f = call(() => J(E.SortFinish(mode)));
+      if (!f.ok) return toast(f.error);
+      say(f.changed ? `Sorted ${f.count} Pokémon (${label}). Undo with ↶.` : 'Already in that order.');
+      if (f.changed) { legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist(); }
+    } finally { lock(false); }
+  };
+  syncTools();
 }
 empty();

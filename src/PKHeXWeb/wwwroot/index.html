@@ -87,10 +87,23 @@ pre{white-space:pre-wrap;background:var(--in);padding:10px;border-radius:10px}
 #trm .dxc{display:flex;gap:14px}#trm .dxc label{display:flex;gap:6px;align-items:center;cursor:pointer}
 #trm .pth{font-size:11px;opacity:.7}
 header{flex-wrap:wrap;gap:8px}header h1{white-space:nowrap;flex:1 0 auto}header .btn{padding:6px 10px;font-size:14px}
+
+#bem{width:min(760px,96vw);max-height:90vh;padding:0;border:1px solid var(--bd);border-radius:14px;background:var(--pn);color:var(--tx)}#bem::backdrop{background:#0009}
+#bem .bew{display:flex;flex-direction:column;max-height:90vh}
+#bem .beh{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 16px 0}#bem .beh h3{margin:0;font-size:16px}
+#bem .beh label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mu)}
+#bem .beb{overflow:auto;padding:12px 16px;flex:1;display:flex;flex-direction:column;gap:10px;min-height:220px}
+#bem select,#bem input,#bem textarea{background:var(--in);border:1px solid var(--bd);border-radius:10px;padding:8px 10px;color:var(--tx)}
+#bem .beadd{display:flex;gap:8px;flex-wrap:wrap}#bem .beadd select{flex:0 0 auto}#bem .beadd input{flex:1;min-width:120px}
+#bem textarea{width:100%;min-height:150px;resize:vertical;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+#bem details{border:1px solid var(--bd);border-radius:12px;padding:8px 12px}#bem summary{cursor:pointer;font-weight:600}#bem details pre{font-size:12px;margin:8px 0 0}
+#bem .bes{padding:6px 0;border-bottom:1px solid var(--bd);font-size:13px}#bem .pth{font-size:11px;opacity:.7}
+#bem .beres p{margin:6px 0}#bem .beres ul{margin:4px 0;padding-left:20px}
+#bem .bef{display:flex;gap:8px;align-items:center;padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--bd)}#bem .sp{flex:1}
 </style></head><body>
 <header><h1>PKHeX Web</h1><button class="btn" id="undobtn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button><button class="btn" id="redobtn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled>↷</button><button class="btn" id="trbtn" title="Trainer, items, Pokédex and other save data">Trainer</button><button class="btn" id="theme">Theme</button>
 <div class="fmenu"><button class="btn" id="toolsbtn" aria-haspopup="menu" aria-expanded="false" aria-controls="toolsmenu">Tools ▾</button>
-<div class="fm" id="toolsmenu" role="menu" hidden><button class="btn" id="ldn">Legal living dex (normal)</button><button class="btn" id="lds">Legal living dex (shiny)</button><button class="btn" id="ldall">Auto-legalise all</button><p class="hint" id="ldstat" hidden></p><button class="btn" id="ldstop" hidden>Stop</button></div></div>
+<div class="fm" id="toolsmenu" role="menu" hidden><button class="btn" id="bebtn">Batch editor…</button><hr><button class="btn" id="ldn">Legal living dex (normal)</button><button class="btn" id="lds">Legal living dex (shiny)</button><button class="btn" id="ldall">Auto-legalise all</button><p class="hint" id="ldstat" hidden></p><button class="btn" id="ldstop" hidden>Stop</button></div></div>
 <div class="fmenu"><button class="btn pri" id="filebtn" aria-haspopup="menu" aria-expanded="false" aria-controls="filemenu">File ▾</button>
 <div class="fm" id="filemenu" role="menu" hidden><button class="btn" id="load">Open save</button><button class="btn" id="newbtn">New blank save</button>
 <div id="newp" hidden><div class="fg"><label class="f">Game<select id="game"></select></label><label class="f">Trainer name<input id="trainer" value="Rob"></label></div><p><button class="btn pri" id="mk">Create save</button></p></div>
