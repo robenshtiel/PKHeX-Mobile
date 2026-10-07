@@ -7,6 +7,7 @@ namespace PkhexWeb;
 
 // Importing many Pokémon files in one go. JS calls MultiImportBegin, then MultiImportNext once per file, then MultiImportEnd.
 // Files go into the first EMPTY slot at or after the start box (rolling over to the next box); nothing is ever overwritten.
+// Older-format files are converted forward and legalised on the way in.
 // Same partial class as Engine.cs / EngineBatch.cs.
 [SupportedOSPlatform("browser")]
 public static partial class Engine
@@ -28,18 +29,16 @@ public static partial class Engine
             if (Sav is null) return NoSave();
             var pk = EntityFormat.GetFromBytes(data);
             if (pk is null) return Err("Not a recognized Pokémon file.");
-            var need = Sav.BlankPKM.GetType();
-            if (pk.GetType() != need)
-                return Err($"That file is a {pk.GetType().Name}, but this save needs a {need.Name}.");
             for (int b = Math.Max(0, startBox); b < Sav.BoxCount; b++)
             {
                 for (int s = 0; s < Sav.BoxSlotCount; s++)
                 {
                     if (Sav.GetBoxSlotAtIndex(b, s).Species != 0) continue;
-                    pk.RefreshChecksum();
-                    Store(pk, b, s);
+                    // Older formats are converted forward and legalised (see EngineConvert.cs); a file that can't be converted uses no slot.
+                    var (error, path, legal, _) = PlaceImported(pk, b, s);
+                    if (error is not null) return Err(error);
                     if (UndoStack.Count > 0) MultiEdits.Add(UndoStack[^1]);
-                    return J(new { ok = true, box = b, slot = s });
+                    return J(new { ok = true, box = b, slot = s, converted = path, legal });
                 }
             }
             return J(new { ok = false, full = true, error = "No empty slots left." });
