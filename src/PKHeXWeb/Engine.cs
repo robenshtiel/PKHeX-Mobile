@@ -1654,8 +1654,51 @@ public static partial class Engine
         if (name is not null && c.Language == 2 && c.Nickname != name) { c.IsNicknamed = false; c.Nickname = name; }
     }
 
+    // Events and gifts come with their own fixed OT. If that isn't the save's trainer, the save's trainer has to be the
+    // current handler (HT name, gender, language, memories) or the check says "Current handler cannot be the OT".
+    static void FixHandler(PKM pk, IEncounterable enc)
+    {
+        try
+        {
+            var otName = TryGet(pk, ["OriginalTrainerName", "OT_Name"])?.ToString();
+            var saveOt = Prop(Sav!, "OT")?.ToString();
+            if (string.IsNullOrEmpty(otName) || string.IsNullOrEmpty(saveOt) || otName == saveOt) return;
+
+            // PKHeX's own helper sets the handler and a matching memory, so prefer it.
+            foreach (var m in typeof(SaveFile).Assembly.GetTypes().Where(t => t.IsAbstract && t.IsSealed && t.IsPublic)
+                         .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                         .Where(m => m.Name is "SetHandlerAndMemory" or "SetHandlerandMemory" && !m.IsGenericMethodDefinition))
+            {
+                var ps = m.GetParameters();
+                if (ps.Length < 2 || !ps[0].ParameterType.IsAssignableFrom(pk.GetType())) continue;
+                try
+                {
+                    var args = new object?[ps.Length]; args[0] = pk;
+                    for (int i = 1; i < ps.Length; i++)
+                    {
+                        var pt = ps[i].ParameterType;
+                        args[i] = pt.IsInstanceOfType(Sav) ? Sav : pt.IsInstanceOfType(enc) ? enc : ps[i].HasDefaultValue ? ps[i].DefaultValue : null;
+                    }
+                    m.Invoke(null, args);
+                    if (SafeInt(TryGet(pk, ["CurrentHandler"])) == 1) return;
+                }
+                catch { }
+            }
+
+            // Fallback: set the handler fields directly.
+            TrySet(pk, ["HandlingTrainerName", "HT_Name"], saveOt!);
+            int gender = SafeInt(Prop(Sav!, "Gender")); if (gender < 0) gender = 0;
+            int lang = SafeInt(Prop(Sav!, "Language")); if (lang < 1) lang = 2;
+            TrySet(pk, ["HandlingTrainerGender", "HT_Gender"], gender);
+            TrySet(pk, ["HandlingTrainerLanguage", "HT_Language"], lang);
+            TrySet(pk, ["CurrentHandler"], 1);
+            TrySet(pk, ["HandlingTrainerFriendship", "HT_Friendship"], 50);
+        }
+        catch { }
+    }
+
     // Builds a Pokémon from one encounter, adjusts it to the wanted species/level, and returns it only if it passes the legality check.
-    static (PKM? pk, string report) Build(IEncounterable enc, int species, int level, bool shiny)
+    static (PKM? pk, string report) Build(IEncounterable enc, int species, int level, bool shiny, bool allowFix = false)
     {
         if (enc is not IEncounterConvertible conv) return (null, "Encounter can't be converted.");
         if (Sav!.Language < 1 || Sav.Language > 12) TrySet(Sav, ["Language"], 2);
@@ -1663,6 +1706,7 @@ public static partial class Engine
         try { pk = conv.ConvertToPKM(Sav!, EncounterCriteria.Unrestricted); }
         catch (Exception e) { return (null, e.Message); }
         if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
+        FixHandler(pk, enc);
 
         var first = true; string report = "";
         int min = Math.Max(1, Convert.ToInt32(Prop(enc, "LevelMin") ?? 1));
@@ -1685,6 +1729,17 @@ public static partial class Engine
             var la = new LegalityAnalysis(c);
             if (first) { report = la.Report(); first = false; }
             if (la.Valid) return (c, "");
+            if (allowFix)
+            {
+                // Evolved species often need small fixes (moves, relearn, flags) that the auto-legaliser knows how to make.
+                try
+                {
+                    var fixedPk = LegaliseInPlace(c, new List<string>());
+                    ApplyPlusFlags(fixedPk, false); fixedPk.RefreshChecksum();
+                    if (new LegalityAnalysis(fixedPk).Valid) return (fixedPk, "");
+                }
+                catch { }
+            }
         }
         return (null, report);
     }
@@ -1715,8 +1770,26 @@ public static partial class Engine
         catch (Exception e) { return Err(e.Message); }
     }
 
+    static int FormCountOf(int species)
+    {
+        try
+        {
+            var personal = Prop(Sav!, "Personal");
+            if (personal is null) return 1;
+            var entry = personal.GetType().GetProperties().Where(p => p.GetIndexParameters().Length == 1 && p.GetIndexParameters()[0].ParameterType == typeof(int))
+                .Select(p => p.GetValue(personal, [species])).FirstOrDefault(x => x is not null);
+            return Math.Max(1, Math.Min(40, SafeInt(entry is null ? null : Prop(entry, "FormCount"))));
+        }
+        catch { return 1; }
+    }
+
+    // First line of a legality report that says something is wrong, for telling the user why a species was skipped.
+    static string FirstProblem(string report)
+        => report.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("Invalid") || l.StartsWith("Fishy")) ?? report.Split('\n').FirstOrDefault()?.Trim() ?? "";
+
     // Builds one legal Pokémon of this species and stores it at position `index` (box-major). Shiny is tried first when
-    // asked for; if no encounter can legally be shiny, the normal one is used instead.
+    // asked for; if no encounter can legally be shiny, the normal one is used instead. If the default form has no legal
+    // encounter, other forms are tried; evolved species that fail get a second pass with the auto-legaliser's fixes.
     [JSExport]
     public static string LivingDexAdd(int index, int species, bool shiny)
     {
@@ -1726,23 +1799,34 @@ public static partial class Engine
             int box = index / Sav.BoxSlotCount, slot = index % Sav.BoxSlotCount;
             if (box >= Sav.BoxCount) return Err("Out of box space.");
             var alphaGame = AlphaSupported();
-            var encs = FindEncounters(Template(species, 0)!)
-                .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0).Take(80).ToList();
-            if (encs.Count == 0) return Err("No legal encounter found.");
+            int forms = FormCountOf(species);
+            string reason = "no encounter found";
             PKM? best = null; var gotShiny = false;
-            if (shiny)
-                foreach (var enc in encs)
+
+            foreach (var fix in new[] { false, true })
+            {
+                for (int form = 0; form < forms && best is null; form++)
                 {
-                    var (pk, _) = Build(enc, species, 1, true);
-                    if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; break; }
+                    var encs = FindEncounters(Template(species, form)!)
+                        .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0).Take(80).ToList();
+                    if (encs.Count == 0) continue;
+                    if (shiny)
+                        foreach (var enc in encs)
+                        {
+                            var (pk, rep) = Build(enc, species, 1, true, fix);
+                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; break; }
+                        }
+                    if (best is null)
+                        foreach (var enc in encs)
+                        {
+                            var (pk, rep) = Build(enc, species, 1, false, fix);
+                            if (pk is not null) { best = pk; break; }
+                            if (fix && reason == "no encounter found") reason = FirstProblem(rep);
+                        }
                 }
-            if (best is null)
-                foreach (var enc in encs)
-                {
-                    var (pk, _) = Build(enc, species, 1, false);
-                    if (pk is not null) { best = pk; break; }
-                }
-            if (best is null) return Err("Couldn't build a legal version.");
+                if (best is not null) break;
+            }
+            if (best is null) return Err(reason);
             Store(best, box, slot);
             return J(new { ok = true, shiny = gotShiny });
         }
