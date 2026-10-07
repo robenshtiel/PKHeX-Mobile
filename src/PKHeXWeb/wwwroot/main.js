@@ -86,7 +86,7 @@ function setup(info) {
 function empty() { $('ed').classList.remove('open'); $('ed').innerHTML = '<p class="hint" style="margin:0">Select a Pokémon to edit it, or an empty slot to add one.</p>'; }
 
 function pick(i) {
-  S.slot = i; const s = S.slots[i]; loadGrid();
+  S.slot = i; loadGrid(); const s = S.slots[i];
   if (s.empty) return showEmpty();
   S.props = call(() => J(E.GetProps(S.box, i))).props ?? []; legalDirty = true; loadOpts(); S.tab = 'Main'; S.note = ''; view();
 }
@@ -98,7 +98,7 @@ function showEmpty() {
     : `<div class="top"><div><h2>Empty slot</h2><small>Box ${S.box + 1}, slot ${S.slot + 1}</small></div><button class="btn cl" id="cl">Close</button></div>
 <div class="fg"><label class="f">Species<select id="nsp">${listOpts('species')}</select></label><label class="f">Level<input id="nlv" type="number" min="1" max="100" value="50"></label><label class="f">Encounter<select id="nenc"><option value="-1">Automatic (first legal)</option></select></label><label class="f chk"><input type="checkbox" id="nsh">Shiny</label>${E.AlphaSupported() ? '<label class="f chk"><input type="checkbox" id="nal">Alpha</label>' : ''}</div>
 <p><button class="btn pri" id="create">Create Pokémon</button> <button class="btn" id="sdbtn">Import Showdown set…</button></p>
-<label class="f">Or import a Pokémon file<input type="file" id="impf"></label>`;
+<label class="f">Or import a Pokémon file<input type="file" id="impf"></label><p class="hint">Files from older generations are converted forward and legalised automatically.</p>`;
   if ($('nsp')) { $('nsp').value = 25; loadEncounters(); }
   enhance(ed);
   ed.classList.add('open');
@@ -445,8 +445,10 @@ $('ed').addEventListener('change', async (e) => {
   if (t.dataset.p) return edit(t.dataset.p, t.type === 'checkbox' ? t.checked : t.value);
   if (t.id === 'impf' && t.files[0]) {
     const b = new Uint8Array(await t.files[0].arrayBuffer());
-    const r = call(() => J(E.ImportPokemon(b, S.box, S.slot)));
-    r.ok ? pick(S.slot) : toast(r.error);
+    const r = call(() => J(E.ImportPokemonAny(b, S.box, S.slot)));
+    if (!r.ok) return toast(r.error);
+    legalDirty = true; S.note = ''; pick(S.slot);
+    if (r.converted) toast(`Converted ${r.converted}. ${r.legal ? 'Legal.' : 'Still not legal: see the Legality tab.'}${r.note ? ' ' + r.note : ''}`);
   }
 });
 $('ed').addEventListener('click', (e) => {
@@ -883,18 +885,19 @@ Preview shows what would change; Run applies it as one Undo step.`;
   $('mbfile').onchange = async (e) => {
     let files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
     const extra = Math.max(0, files.length - MAX); files = files.slice(0, MAX);
-    const start = Math.max(0, S.box); let placed = 0, first = null, last = null, full = 0; const bad = [];
+    const start = Math.max(0, S.box); let placed = 0, first = null, last = null, full = 0, conv = 0, illegal = 0; const bad = [];
     call(() => J(E.MultiImportBegin()));
     for (const f of files) {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const r = call(() => J(E.MultiImportNext(bytes, start)));
-      if (r.ok) { placed++; first ??= r; last = r; }
+      if (r.ok) { placed++; first ??= r; last = r; if (r.converted) { conv++; if (!r.legal) illegal++; } }
       else if (r.full) { full = files.length - placed - bad.length; break; }
       else bad.push(`${f.name} (${r.error})`);
     }
     E.MultiImportEnd();
     const pos = (r) => `Box ${r.box + 1} slot ${r.slot + 1}`;
     const parts = [placed ? `Imported ${placed} (${pos(first)}${placed > 1 ? ` to ${pos(last)}` : ''}).` : 'Nothing imported.'];
+    if (conv) parts.push(`${conv} converted from an older format${illegal ? `, ${illegal} still not legal` : ''}.`);
     if (full) parts.push(`${full} didn’t fit: no empty slots left.`);
     if (extra) parts.push(`Only the first ${MAX} files are used; ${extra} skipped.`);
     if (bad.length) parts.push(`Failed: ${bad.slice(0, 3).join('; ')}${bad.length > 3 ? ` and ${bad.length - 3} more` : ''}.`);
