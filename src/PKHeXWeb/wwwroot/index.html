@@ -58,6 +58,11 @@ td{padding:4px}td input{width:64px;background:var(--in);border:1px solid var(--b
 h3{font-size:14px;margin:16px 0 8px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:12px;z-index:20;max-width:90%;font-size:14px}
 
+.slot i{position:absolute;z-index:3;font-style:normal;line-height:1;pointer-events:none}
+.slot .lg{left:17%;top:17%;width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(0,0,0,.45)}
+.slot .lg.ok{background:#2fbf71}.slot .lg.bad{background:#e5484d}
+.slot .sh{right:17%;top:13%;font-size:13px;color:#ffd23f;text-shadow:0 0 2px #000,0 0 3px #000}
+.slot .al{left:15%;bottom:13%;font-size:13px;font-weight:800;color:#ff5a5f;text-shadow:0 0 2px #000,0 0 3px #000}
 .slot span{position:absolute;bottom:2px;right:6px;font-size:10px;color:var(--tx);text-shadow:none;z-index:2}
 .slot img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;position:relative;z-index:1}
 .av{background:var(--in);text-shadow:none;overflow:hidden}.av img{width:100%;image-rendering:pixelated}
@@ -84,6 +89,8 @@ pre{white-space:pre-wrap;background:var(--in);padding:10px;border-radius:10px}
 header{flex-wrap:wrap;gap:8px}header h1{white-space:nowrap;flex:1 0 auto}header .btn{padding:6px 10px;font-size:14px}
 </style></head><body>
 <header><h1>PKHeX Web</h1><button class="btn" id="undobtn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button><button class="btn" id="redobtn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled>↷</button><button class="btn" id="trbtn" title="Trainer, items, Pokédex and other save data">Trainer</button><button class="btn" id="theme">Theme</button>
+<div class="fmenu"><button class="btn" id="toolsbtn" aria-haspopup="menu" aria-expanded="false" aria-controls="toolsmenu">Tools ▾</button>
+<div class="fm" id="toolsmenu" role="menu" hidden><button class="btn" id="ldn">Legal living dex (normal)</button><button class="btn" id="lds">Legal living dex (shiny)</button><button class="btn" id="ldall">Auto-legalise all</button><p class="hint" id="ldstat" hidden></p><button class="btn" id="ldstop" hidden>Stop</button></div></div>
 <div class="fmenu"><button class="btn pri" id="filebtn" aria-haspopup="menu" aria-expanded="false" aria-controls="filemenu">File ▾</button>
 <div class="fm" id="filemenu" role="menu" hidden><button class="btn" id="load">Open save</button><button class="btn" id="newbtn">New blank save</button>
 <div id="newp" hidden><div class="fg"><label class="f">Game<select id="game"></select></label><label class="f">Trainer name<input id="trainer" value="Rob"></label></div><p><button class="btn pri" id="mk">Create save</button></p></div>

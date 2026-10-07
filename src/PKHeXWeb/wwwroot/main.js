@@ -61,7 +61,7 @@ function loadGrid() {
   S.slots = r.slots ?? [];
   $('grid').innerHTML = S.slots.map((s) => s.empty
     ? `<button class="slot${s.slot === S.slot ? ' sel' : ''}" data-s="${s.slot}" aria-label="Empty slot"></button>`
-    : `<button class="slot f${s.slot === S.slot ? ' sel' : ''}" data-s="${s.slot}" aria-label="${esc(s.nick)} level ${s.level}">${img(s.id, s.shiny)}<span>${s.level}</span></button>`).join('');
+    : `<button class="slot f${s.slot === S.slot ? ' sel' : ''}" data-s="${s.slot}" aria-label="${esc(s.nick)} level ${s.level}">${img(s.id, s.shiny)}<i class="lg ${s.legal ? 'ok' : 'bad'}" title="${s.legal ? 'Legal' : 'Illegal'}"></i>${s.shiny ? '<i class="sh" title="Shiny">★</i>' : ''}${s.alpha ? '<i class="al" title="Alpha">α</i>' : ''}<span>${s.level}</span></button>`).join('');
   $('boxsel').value = S.box;
 }
 
@@ -611,5 +611,69 @@ function trOpen() {
     else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); $('redobtn').click(); }
   });
   updateHist();
+}
+
+// ---- top bar: Tools menu (legal living dex) ----
+{
+  const tb = $('toolsbtn'), tm = $('toolsmenu'), stat = $('ldstat'), stopBtn = $('ldstop');
+  let running = false, stop = false;
+  const close = () => { if (running) return; tm.hidden = true; tb.setAttribute('aria-expanded', 'false'); };
+  tb.onclick = (e) => { e.stopPropagation(); $('filemenu').hidden = true; $('filebtn').setAttribute('aria-expanded', 'false'); tm.hidden = !tm.hidden; tb.setAttribute('aria-expanded', String(!tm.hidden)); };
+  $('filebtn').addEventListener('click', () => { if (!running) close(); });
+  document.addEventListener('click', (e) => { if (!tm.contains(e.target) && e.target !== tb) close(); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  stopBtn.onclick = () => { stop = true; stopBtn.disabled = true; };
+
+  async function livingDex(shiny) {
+    if (running) return;
+    if (!S.info) return toast('Open or create a save first.');
+    const plan = call(() => J(E.LivingDexPlan()));
+    if (!plan.ok) return toast(plan.error);
+    const list = plan.species.slice(0, plan.capacity);
+    if (!confirm(`Fill up to ${list.length} slots from Box 1, slot 1 with a legal ${shiny ? 'shiny ' : ''}living dex? Pokémon in those slots will be replaced (undo only covers the last 200 edits).`)) return;
+    running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
+    for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = true;
+    let placed = 0, shinies = 0; const skipped = [];
+    for (let i = 0; i < list.length && !stop; i++) {
+      stat.textContent = `Building ${i + 1} / ${list.length}…`;
+      await new Promise((r) => setTimeout(r, 0));   // let the page repaint between species
+      const r = call(() => J(E.LivingDexAdd(placed, list[i], shiny)));
+      if (r.ok) { placed++; if (r.shiny) shinies++; } else skipped.push(list[i]);
+    }
+    running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = false;
+    stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed}` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
+      + (skipped.length ? `. Skipped ${skipped.length} with no legal encounter (#${skipped.slice(0, 12).join(', #')}${skipped.length > 12 ? '…' : ''}).` : '.');
+    legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
+  }
+  async function legaliseAll() {
+    if (running) return;
+    if (!S.info) return toast('Open or create a save first.');
+    const plan = call(() => J(E.OccupiedSlots()));
+    if (!plan.ok) return toast(plan.error);
+    if (!plan.slots.length) return toast('No Pokémon to check.');
+    if (!confirm(`Check ${plan.slots.length} Pokémon and automatically fix any that are illegal? Fixes can change moves, met data and other fields (undo only covers the last 200 edits).`)) return;
+    running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
+    for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = true;
+    let legal = 0, fixed = 0, partial = 0, failed = 0, done = 0;
+    for (const [bx, sl] of plan.slots) {
+      if (stop) break;
+      stat.textContent = `Checking ${done + 1} / ${plan.slots.length}… (fixed ${fixed})`;
+      await new Promise((r) => setTimeout(r, 0));
+      const r = call(() => J(E.AutoLegalise(bx, sl)));
+      done++;
+      if (!r.ok) failed++;
+      else if (r.valid && !r.changed) legal++;
+      else if (r.changed && r.valid) fixed++;
+      else if (r.changed) partial++;
+      else failed++;
+    }
+    running = false; stopBtn.hidden = true;
+    for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = false;
+    stat.textContent = `${stop ? `Stopped after ${done}. ` : ''}${legal} already legal, ${fixed} fixed, ${partial} improved but still need attention, ${failed} couldn't be fixed automatically.`;
+    legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
+  }
+  $('ldall').onclick = legaliseAll;
+  $('ldn').onclick = () => livingDex(false);
+  $('lds').onclick = () => livingDex(true);
 }
 empty();
