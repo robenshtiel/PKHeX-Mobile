@@ -1118,6 +1118,33 @@ public static partial class Engine
         "PA9" => "9ZA", "PK9" => "9SV", "PA8" => "8LA", "PK8" => "8SWSH", "PB8" => "8BDSP", _ => "",
     };
 
+    static Learnset? LearnsetFor(PKM pk)
+    {
+        var code = LearnCode(pk);
+        if (code == "") return null;
+        var t = typeof(SaveFile).Assembly.GetTypes().FirstOrDefault(x => x.IsPublic && x.Name.StartsWith("LearnSource") && x.Name.EndsWith(code));
+        if (t is null) return null;
+        var inst = t.GetField("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+                   ?? t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+        var gm = t.GetMethods(BindingFlags.Public | BindingFlags.Instance).FirstOrDefault(m => m.Name == "GetLearnset" && m.GetParameters().Length == 2);
+        if (inst is null || gm is null) return null;
+        var ps = gm.GetParameters();
+        return gm.Invoke(inst, [Convert.ChangeType((int)pk.Species, ps[0].ParameterType), Convert.ChangeType(Math.Max(0, SafeInt(Prop(pk, "Form"))), ps[1].ParameterType)]) as Learnset;
+    }
+
+    // Gives the Pokémon the moves it would have at its level in-game (its latest level-up moves).
+    static bool SetLevelUpMoves(PKM pk)
+    {
+        var ls = LearnsetFor(pk);
+        if (ls is null) return false;
+        Span<ushort> mv = stackalloc ushort[4];
+        ls.SetEncounterMoves((byte)Math.Max(1, (int)pk.CurrentLevel), mv);
+        pk.Move1 = mv[0]; pk.Move2 = mv[1]; pk.Move3 = mv[2]; pk.Move4 = mv[3];
+        TrySet(pk, ["Move1_PPUps"], 0); TrySet(pk, ["Move2_PPUps"], 0); TrySet(pk, ["Move3_PPUps"], 0); TrySet(pk, ["Move4_PPUps"], 0);
+        Call(pk, "HealPP");
+        return true;
+    }
+
     static (HashSet<int>? moves, string note) LevelUpPool(PKM pk)
     {
         var code = LearnCode(pk);
@@ -1736,6 +1763,9 @@ public static partial class Engine
             if (changed)
             {
                 c.Species = (ushort)species;
+                // Regional/alternate forms of the earlier stage (Galarian Farfetch'd, roaming Gimmighoul...) don't carry over
+                // to species that only have one form.
+                if (FormCountOf(species) <= 1 && SafeInt(Prop(c, "Form")) > 0) TrySet(c, ["Form"], 0);
                 Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
             }
             FixNames(c, changed);
@@ -1754,8 +1784,11 @@ public static partial class Engine
                 {
                     _ => { },
                     x => ForceTraded(x),
-                    x => TrySet(x, ["RageFistTimes"], 20),
-                    x => { ForceTraded(x); TrySet(x, ["RageFistTimes"], 20); },
+                    x => { TrySet(x, ["RageFistTimes"], 20); if (x.Species == 979) x.Move1 = 889; },   // Annihilape: Rage Fist used 20 times
+                    x => { ForceTraded(x); TrySet(x, ["RageFistTimes"], 20); if (x.Species == 979) x.Move1 = 889; },
+                    x => SetLevelUpMoves(x),
+                    x => { ForceTraded(x); SetLevelUpMoves(x); },
+                    x => { ForceTraded(x); TrySet(x, ["HeldItem"], 537); },                        // Prism Scale (Feebas)
                 };
                 for (int vi = 0; vi < variants.Count; vi++)
                 {
