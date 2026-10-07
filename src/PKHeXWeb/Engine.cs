@@ -1964,7 +1964,7 @@ public static partial class Engine
             var alphaGame = AlphaSupported();
             int forms = FormCountOf(species);
             string reason = "no encounter found";
-            PKM? best = null; var gotShiny = false, gotCross = false;
+            PKM? best = null; bool gotShiny = false, gotCross = false;
 
             foreach (var fix in new[] { false, true })
             {
