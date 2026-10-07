@@ -8,7 +8,7 @@ using PKHeX.Core;
 namespace PkhexWeb;
 
 // Every PKHeX.Core call lives in this file. If an upstream update renames something,
-// this is the only file that needs fixing.
+// this is the only file that needs fixing. (The batch editor is the same class, in EngineBatch.cs.)
 // Slot addressing: box >= 0 is a box, box = -1 is the party.
 [SupportedOSPlatform("browser")]
 public static partial class Engine
@@ -304,49 +304,58 @@ public static partial class Engine
         try
         {
             var pk = Slot(box, slot);
-            if (pk is not null && Sav is not null && name == "IsShiny")
-            {
-                if (!SetShiny(pk, bool.Parse(value))) return Err("Couldn't change shiny status (PKHeX API changed?).");
-                pk.RefreshChecksum();
-                Store(pk, box, slot);
-                return J(new { ok = true });
-            }
-            var p = pk is null ? null : Editable(pk).FirstOrDefault(x => x.Name == name);
-            if (pk is null || p is null || Sav is null) return Err("Unknown property.");
-            var t = p.PropertyType;
-            if (Range(pk, p) is { } r && !t.IsEnum && t != typeof(bool))
-            {
-                if (!decimal.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
-                    return Err($"{Nice(name)} must be a whole number.");
-                if (num < decimal.Parse(r.Min, CultureInfo.InvariantCulture) || num > decimal.Parse(r.Max, CultureInfo.InvariantCulture))
-                    return Err($"{Nice(name)} must be between {r.Min} and {r.Max}.");
-                if (name.StartsWith("EV_") && Lim(pk, "MaxEV", 252) <= 255)
-                {
-                    var total = EvStats.Sum(x => "EV_" + x == name ? (int)num : Convert.ToInt32(Prop(pk, "EV_" + x) ?? 0));
-                    if (total > MaxEvTotal) return Err($"EVs can't total more than {MaxEvTotal} (that would be {total}).");
-                }
-            }
-            object v = t.IsEnum ? Enum.Parse(t, value)
-                     : t == typeof(bool) ? bool.Parse(value)
-                     : Convert.ChangeType(value, t, CultureInfo.InvariantCulture);
-            p.SetValue(pk, v);
-            if (name == "AbilityNumber") Call(pk, "RefreshAbility", (int)Math.Log2(Math.Max(1, Convert.ToInt32(v))));
-            if (name == "Ability")
-            {
-                var id = Convert.ToInt32(v); var sl = AbilitySlots(pk);
-                var curNum = Convert.ToInt32(Prop(pk, "AbilityNumber") ?? 0);
-                int curIdx = curNum > 0 ? (int)Math.Log2(curNum) : -1;
-                var idx = curIdx >= 0 && curIdx < sl.Count && sl[curIdx] == id ? curIdx : sl.FindIndex(a => a == id);
-                if (idx >= 0) Call(pk, "RefreshAbility", idx);
-            }
-            if (System.Text.RegularExpressions.Regex.IsMatch(name, "^Move[1-4]$")) Call(pk, "HealPP");
-            if (AutoLegal && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version|Move[1-4])$")) ApplyPlusFlags(pk, false);
-            if (AutoRelearn && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version)$")) FillSuggestedRelearn(pk);
-            pk.RefreshChecksum();
+            if (pk is null || Sav is null) return Err("Unknown property.");
+            var error = ApplyProp(pk, name, value);
+            if (error is not null) return Err(error);
             Store(pk, box, slot);
             return J(new { ok = true });
         }
         catch (Exception e) { return Err(e.Message); }
+    }
+
+    // Sets one field on a Pokémon (range checks, ability refresh, auto-legality) without storing it.
+    // Returns an error message, or null on success. Shared by the editor (SetProp) and the batch editor.
+    static string? ApplyProp(PKM pk, string name, string value)
+    {
+        if (name == "IsShiny")
+        {
+            if (!SetShiny(pk, bool.Parse(value))) return "Couldn't change shiny status (PKHeX API changed?).";
+            pk.RefreshChecksum();
+            return null;
+        }
+        var p = Editable(pk).FirstOrDefault(x => x.Name == name);
+        if (p is null || Sav is null) return "Unknown property.";
+        var t = p.PropertyType;
+        if (Range(pk, p) is { } r && !t.IsEnum && t != typeof(bool))
+        {
+            if (!decimal.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+                return $"{Nice(name)} must be a whole number.";
+            if (num < decimal.Parse(r.Min, CultureInfo.InvariantCulture) || num > decimal.Parse(r.Max, CultureInfo.InvariantCulture))
+                return $"{Nice(name)} must be between {r.Min} and {r.Max}.";
+            if (name.StartsWith("EV_") && Lim(pk, "MaxEV", 252) <= 255)
+            {
+                var total = EvStats.Sum(x => "EV_" + x == name ? (int)num : Convert.ToInt32(Prop(pk, "EV_" + x) ?? 0));
+                if (total > MaxEvTotal) return $"EVs can't total more than {MaxEvTotal} (that would be {total}).";
+            }
+        }
+        object v = t.IsEnum ? Enum.Parse(t, value)
+                 : t == typeof(bool) ? bool.Parse(value)
+                 : Convert.ChangeType(value, t, CultureInfo.InvariantCulture);
+        p.SetValue(pk, v);
+        if (name == "AbilityNumber") Call(pk, "RefreshAbility", (int)Math.Log2(Math.Max(1, Convert.ToInt32(v))));
+        if (name == "Ability")
+        {
+            var id = Convert.ToInt32(v); var sl = AbilitySlots(pk);
+            var curNum = Convert.ToInt32(Prop(pk, "AbilityNumber") ?? 0);
+            int curIdx = curNum > 0 ? (int)Math.Log2(curNum) : -1;
+            var idx = curIdx >= 0 && curIdx < sl.Count && sl[curIdx] == id ? curIdx : sl.FindIndex(a => a == id);
+            if (idx >= 0) Call(pk, "RefreshAbility", idx);
+        }
+        if (System.Text.RegularExpressions.Regex.IsMatch(name, "^Move[1-4]$")) Call(pk, "HealPP");
+        if (AutoLegal && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version|Move[1-4])$")) ApplyPlusFlags(pk, false);
+        if (AutoRelearn && System.Text.RegularExpressions.Regex.IsMatch(name, "^(Species|Form|CurrentLevel|EXP|Version)$")) FillSuggestedRelearn(pk);
+        pk.RefreshChecksum();
+        return null;
     }
 
     // ---------- Plus flags (Legends: Z-A) and move mastery (Legends: Arceus) ----------
@@ -966,30 +975,35 @@ public static partial class Engine
         {
             var pk = Slot(box, slot);
             if (pk is null) return Err("No Pokémon in that slot.");
-            var d = new Dictionary<string, List<Opt>>();
-            void Add(string[] names, List<Opt>? l)
-            {
-                if (l is null || l.Count == 0) return;
-                foreach (var n in names)
-                {
-                    var pi = FindProp(pk.GetType(), n);
-                    if (pi is null || pi.PropertyType.IsEnum || pi.PropertyType == typeof(bool)) continue;
-                    d[n] = l;
-                }
-            }
-            Add(["Gender"], Pairs("Male", "Female", "Genderless"));
-            Add(["OriginalTrainerGender", "OT_Gender", "HandlingTrainerGender", "HT_Gender"], Pairs("Male", "Female"));
-            Add(["CurrentHandler"], Pairs("Original Trainer", "Handling Trainer"));
-            Add(["AbilityNumber"], [new Opt(1, "First ability"), new Opt(2, "Second ability"), new Opt(4, "Hidden ability")]);
-            Add(["Language"], [new Opt(1, "Japanese"), new Opt(2, "English"), new Opt(3, "French"), new Opt(4, "Italian"), new Opt(5, "German"),
-                               new Opt(7, "Spanish"), new Opt(8, "Korean"), new Opt(9, "Chinese (Simplified)"), new Opt(10, "Chinese (Traditional)")]);
-            Add(["Ball"], EnumOpts("PKHeX.Core.Ball"));
-            Add(["Form"], Forms(pk));
-            Add(["MetLocation", "Met_Location"], Locations(pk, false));
-            Add(["EggLocation", "Egg_Location"], Locations(pk, true));
-            return J(new { ok = true, opts = d });
+            return J(new { ok = true, opts = OptsFor(pk) });
         }
         catch (Exception e) { return Err(e.Message); }
+    }
+
+    static Dictionary<string, List<Opt>> OptsFor(PKM pk)
+    {
+        var d = new Dictionary<string, List<Opt>>();
+        void Add(string[] names, List<Opt>? l)
+        {
+            if (l is null || l.Count == 0) return;
+            foreach (var n in names)
+            {
+                var pi = FindProp(pk.GetType(), n);
+                if (pi is null || pi.PropertyType.IsEnum || pi.PropertyType == typeof(bool)) continue;
+                d[n] = l;
+            }
+        }
+        Add(["Gender"], Pairs("Male", "Female", "Genderless"));
+        Add(["OriginalTrainerGender", "OT_Gender", "HandlingTrainerGender", "HT_Gender"], Pairs("Male", "Female"));
+        Add(["CurrentHandler"], Pairs("Original Trainer", "Handling Trainer"));
+        Add(["AbilityNumber"], [new Opt(1, "First ability"), new Opt(2, "Second ability"), new Opt(4, "Hidden ability")]);
+        Add(["Language"], [new Opt(1, "Japanese"), new Opt(2, "English"), new Opt(3, "French"), new Opt(4, "Italian"), new Opt(5, "German"),
+                           new Opt(7, "Spanish"), new Opt(8, "Korean"), new Opt(9, "Chinese (Simplified)"), new Opt(10, "Chinese (Traditional)")]);
+        Add(["Ball"], EnumOpts("PKHeX.Core.Ball"));
+        Add(["Form"], Forms(pk));
+        Add(["MetLocation", "Met_Location"], Locations(pk, false));
+        Add(["EggLocation", "Egg_Location"], Locations(pk, true));
+        return d;
     }
 
     // ---------- legal moves and abilities ----------
