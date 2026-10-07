@@ -1807,18 +1807,27 @@ public static partial class Engine
         return ok;
     }
 
-    // Shown after a failed build so we can see which evolution-counter fields this Pokémon format really has.
-    static string DebugArgs(PKM pk)
+    // Shown after a failed build: the fields that matter for evolution/encounter matching, whether the un-evolved Pokémon is
+    // legal by itself, and what PKHeX says once it is turned into the wanted species (traded, level 40+).
+    static string DebugArgs(PKM pk, int species)
     {
         try
         {
-            var re = new System.Text.RegularExpressions.Regex("Form|Rage|Coin|Arg|Count|Times");
-            var props = pk.GetType().GetProperties().Where(p => p.GetIndexParameters().Length == 0 && p.CanRead && re.IsMatch(p.Name))
+            var keep = new System.Text.RegularExpressions.Regex("^(Form|FormArgument|IsAlpha|AbilityNumber|Ability|HeldItem|CurrentLevel|MetLevel|MetLocation|Version|CurrentHandler|HandlingTrainerName|Gender|Nature)$");
+            var props = pk.GetType().GetProperties().Where(p => p.GetIndexParameters().Length == 0 && p.CanRead && keep.IsMatch(p.Name))
                 .Select(p => { object? v = null; try { v = p.GetValue(pk); } catch { } return $"{p.Name}={v}"; });
-            var ifs = pk.GetType().GetInterfaces().Select(x => x.Name).Where(n => re.IsMatch(n));
-            return $"\n[debug {pk.GetType().Name} sp={pk.Species}: {string.Join(", ", props)} | {string.Join(", ", ifs)}]";
+            var alone = new LegalityAnalysis(pk.Clone());
+            var e = pk.Clone();
+            e.Species = (ushort)species;
+            if (FormCountOf(species) <= 1) TrySet(e, ["Form"], 0);
+            ForceTraded(e);
+            if (e.CurrentLevel < 40) { e.CurrentLevel = 40; Call(e, "ResetPartyStats"); }
+            e.RefreshChecksum();
+            var la = new LegalityAnalysis(e);
+            var bad = la.Report().Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith("Invalid") || l.StartsWith("Fishy")).Take(5);
+            return $"\n[debug {pk.GetType().Name} {pk.Species}->{species}: {string.Join(", ", props)} | un-evolved legal alone: {alone.Valid} | evolved+traded lv40: {(la.Valid ? "valid" : string.Join(" ; ", bad))}]";
         }
-        catch { return ""; }
+        catch (Exception ex) { return "\n[debug failed: " + ex.Message + "]"; }
     }
 
     // Builds a Pokémon from one encounter, adjusts it to the wanted species/level, and returns it only if it passes the legality check.
@@ -1876,6 +1885,15 @@ public static partial class Engine
                     variants.Insert(1, x => { ForceTraded(x); SetFormArg(x, exact); if (x.Species == 979) x.Move1 = 889; });
                     variants.Insert(2, x => { ForceTraded(x); SetFormArg(x, exact); SetLevelUpMoves(x); if (x.Species == 979) x.Move1 = 889; });
                 }
+                // Single-ability species (Gimmighoul/Gholdengo) have three identical ability slots, and some encounters only match one
+                // of them. Try every slot for the evolved species' ability, alone and with the traded flag.
+                for (int ai = 0; ai < 3; ai++)
+                {
+                    int slotIdx = ai;
+                    variants.Add(x => { Call(x, "RefreshAbility", slotIdx); });
+                    variants.Add(x => { ForceTraded(x); Call(x, "RefreshAbility", slotIdx); });
+                    variants.Add(x => { SetFormArg(x, 0); Call(x, "RefreshAbility", slotIdx); });
+                }
                 variants.Add(x => SetFormArg(x, 0));   // the earlier stage's counter doesn't apply to the evolved species
                 variants.Add(x => { ForceTraded(x); SetFormArg(x, 0); });
                 foreach (var arg in new[] { 1, 2, 3, 5, 20, 49, 50, 100, 255, 999 })   // Sirfetch'd crits, Annihilape Rage Fist, Runerigus damage...
@@ -1901,7 +1919,7 @@ public static partial class Engine
                 }
             }
         }
-        return (null, (fixReport != "" ? fixReport : report) + (allowFix ? DebugArgs(pk) : ""));
+        return (null, (fixReport != "" ? fixReport : report) + (allowFix ? DebugArgs(pk, species) : ""));
     }
 
     // ---------- legal living dex ----------
@@ -1984,7 +2002,12 @@ public static partial class Engine
                         {
                             var (pk, rep) = Build(enc, species, 1, false, fix);
                             if (pk is not null) { best = pk; gotCross = IsCrossGame(enc); break; }
-                            if (fix && reason == "no encounter found") reason = FirstProblem(rep);
+                            if (fix && reason == "no encounter found")
+                            {
+                                reason = FirstProblem(rep);
+                                int d = rep.IndexOf("\n[debug", StringComparison.Ordinal);
+                                if (d >= 0) reason += rep.Substring(d);   // keep the field dump so failures can be diagnosed
+                            }
                         }
                 }
                 if (best is not null) break;
