@@ -1654,6 +1654,23 @@ public static partial class Engine
         if (name is not null && c.Language == 2 && c.Nickname != name) { c.IsNicknamed = false; c.Nickname = name; }
     }
 
+    // Trade evolutions (e.g. Milotic) require a Pokémon that has been traded, i.e. one with a handling trainer.
+    static void ForceTraded(PKM pk)
+    {
+        var ht = TryGet(pk, ["HandlingTrainerName", "HT_Name"])?.ToString();
+        if (!string.IsNullOrEmpty(ht)) return;
+        var ot = TryGet(pk, ["OriginalTrainerName", "OT_Name"])?.ToString() ?? "";
+        var saveOt = Prop(Sav!, "OT")?.ToString() ?? "";
+        var name = saveOt.Length > 0 && saveOt != ot ? saveOt : "Partner";
+        int gender = SafeInt(Prop(Sav!, "Gender")); if (gender < 0) gender = 0;
+        int lang = SafeInt(Prop(Sav!, "Language")); if (lang < 1) lang = 2;
+        TrySet(pk, ["HandlingTrainerName", "HT_Name"], name);
+        TrySet(pk, ["HandlingTrainerGender", "HT_Gender"], gender);
+        TrySet(pk, ["HandlingTrainerLanguage", "HT_Language"], lang);
+        TrySet(pk, ["CurrentHandler"], 1);
+        TrySet(pk, ["HandlingTrainerFriendship", "HT_Friendship"], 50);
+    }
+
     // Events and gifts come with their own fixed OT. If that isn't the save's trainer, the save's trainer has to be the
     // current handler (HT name, gender, language, memories) or the check says "Current handler cannot be the OT".
     static void FixHandler(PKM pk, IEncounterable enc)
@@ -1708,7 +1725,7 @@ public static partial class Engine
         if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
         FixHandler(pk, enc);
 
-        var first = true; string report = "";
+        var first = true; string report = ""; string fixReport = "";
         int min = Math.Max(1, Convert.ToInt32(Prop(enc, "LevelMin") ?? 1));
         var tries = new List<int> { Math.Max(level, min) };
         if (pk.Species != species) tries.AddRange(new[] { 16, 20, 25, 30, 32, 36, 40, 45, 50, 55, 65, 100 }.Where(l => l > tries[0]));
@@ -1731,17 +1748,31 @@ public static partial class Engine
             if (la.Valid) return (c, "");
             if (allowFix)
             {
-                // Evolved species often need small fixes (moves, relearn, flags) that the auto-legaliser knows how to make.
-                try
+                // Evolved species often need small fixes (moves, relearn, flags) that the auto-legaliser knows how to make,
+                // plus the state a special evolution leaves behind (traded, Rage Fist used 20 times).
+                var variants = new List<Action<PKM>>
                 {
-                    var fixedPk = LegaliseInPlace(c, new List<string>());
-                    ApplyPlusFlags(fixedPk, false); fixedPk.RefreshChecksum();
-                    if (new LegalityAnalysis(fixedPk).Valid) return (fixedPk, "");
+                    _ => { },
+                    x => ForceTraded(x),
+                    x => TrySet(x, ["RageFistTimes"], 20),
+                    x => { ForceTraded(x); TrySet(x, ["RageFistTimes"], 20); },
+                };
+                for (int vi = 0; vi < variants.Count; vi++)
+                {
+                    try
+                    {
+                        var d = c.Clone(); variants[vi](d);
+                        var fixedPk = LegaliseInPlace(d, new List<string>());
+                        ApplyPlusFlags(fixedPk, false); fixedPk.RefreshChecksum();
+                        var fl = new LegalityAnalysis(fixedPk);
+                        if (fl.Valid) return (fixedPk, "");
+                        if (vi == 0 && fixReport == "") fixReport = fl.Report();   // what is still wrong after the normal fixes
+                    }
+                    catch { }
                 }
-                catch { }
             }
         }
-        return (null, report);
+        return (null, fixReport != "" ? fixReport : report);
     }
 
     // ---------- legal living dex ----------
@@ -1785,7 +1816,10 @@ public static partial class Engine
 
     // First line of a legality report that says something is wrong, for telling the user why a species was skipped.
     static string FirstProblem(string report)
-        => report.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("Invalid") || l.StartsWith("Fishy")) ?? report.Split('\n').FirstOrDefault()?.Trim() ?? "";
+    {
+        var lines = report.Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith("Invalid") || l.StartsWith("Fishy")).Take(3).ToList();
+        return lines.Count > 0 ? string.Join(" | ", lines) : report.Split('\n').FirstOrDefault()?.Trim() ?? "";
+    }
 
     // Builds one legal Pokémon of this species and stores it at position `index` (box-major). Shiny is tried first when
     // asked for; if no encounter can legally be shiny, the normal one is used instead. If the default form has no legal
@@ -1856,6 +1890,16 @@ public static partial class Engine
                 var (pk, report) = Build(enc, species, level, shiny);
                 if (pk is null) { if (firstReport == "") firstReport = report; continue; }
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa && pa != alpha) continue;
+                if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
+                Store(pk, box, slot);
+                return J(new { ok = true, encounter = EncName(enc) });
+            }
+            // Second pass: let the auto-legaliser's fixes and special-evolution state (traded, Rage Fist) be applied.
+            foreach (var enc in candidates.Take(25))
+            {
+                var (pk, report) = Build(enc, species, level, shiny, true);
+                if (pk is null) continue;
+                if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa2 && pa2 != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
                 return J(new { ok = true, encounter = EncName(enc) });
