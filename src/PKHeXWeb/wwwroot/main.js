@@ -638,7 +638,7 @@ function trOpen() {
       stat.textContent = `Building ${i + 1} / ${list.length}…`;
       await new Promise((r) => setTimeout(r, 0));   // let the page repaint between species
       const r = call(() => J(E.LivingDexAdd(placed, list[i], shiny)));
-      if (r.ok) { placed++; if (r.shiny) shinies++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 70)})`);
+      if (r.ok) { placed++; if (r.shiny) shinies++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 220)})`);
     }
     running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall']) $(id).disabled = false;
     stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed}` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
