@@ -29,7 +29,7 @@ const TAB = {
 const GAME = { RD: 'Red', GN: 'Green', BU: 'Blue', YW: 'Yellow', GD: 'Gold', SI: 'Silver', C: 'Crystal', R: 'Ruby', S: 'Sapphire', E: 'Emerald', FR: 'FireRed', LG: 'LeafGreen', CXD: 'Colosseum / XD', D: 'Diamond', P: 'Pearl', Pt: 'Platinum', HG: 'HeartGold', SS: 'SoulSilver', B: 'Black', W: 'White', B2: 'Black 2', W2: 'White 2', X: 'X', Y: 'Y', OR: 'Omega Ruby', AS: 'Alpha Sapphire', SN: 'Sun', MN: 'Moon', US: 'Ultra Sun', UM: 'Ultra Moon', GO: 'Pokémon GO', GP: 'Let’s Go, Pikachu!', GE: 'Let’s Go, Eevee!', SW: 'Sword', SH: 'Shield', BD: 'Brilliant Diamond', SP: 'Shining Pearl', PLA: 'Legends: Arceus', SL: 'Scarlet', VL: 'Violet', ZA: 'Legends: Z-A' };
 const S = { info: null, box: 0, slot: -1, slots: [], props: [], opts: {}, legal: {}, tab: 'Main', note: '' };
 let legalDirty = true;
-const TR = { props: [], inv: null, dex: null, tab: 'Trainer', open: new Set() };   // Trainer window state
+const TR = { props: [], inv: null, dex: null, names: null, tab: 'Trainer', sub: null, q: '', owned: false, open: new Set() };   // Trainer window state
 const LEGAL_DEP = /^(Species|Form|CurrentLevel|EXP|Version|Met|Egg|IsEgg|Ability|Move[1-4]$)/;
 const ONLY_LEGAL = /^(Move[1-4]|RelearnMove[1-4]|Ability)$/;
 const loadOpts = () => {
@@ -76,7 +76,7 @@ function syncTools() {
 
 function setup(info) {
   if (!info.ok) return toast(info.error);
-  S.info = info; S.slot = -1; TR.props = []; TR.inv = TR.dex = null;
+  S.info = info; S.slot = -1; TR.props = []; TR.inv = TR.dex = TR.names = null; TR.sub = null; TR.q = '';
   $('boxsel').innerHTML = `<option value="-1">Party</option>` + Array.from({ length: info.boxes }, (_, i) => `<option value="${i}">Box ${i + 1}</option>`).join('');
   S.box = info.party > 0 ? -1 : 0;
   $('hint').textContent = `${info.game} · generation ${info.generation} · trainer ${info.ot}`;
@@ -524,25 +524,43 @@ function trFields(tab) {
     : `<p class="hint">No ${tab.toLowerCase()} fields were found for this game. Try “All fields”.</p>`;
 }
 
+const POUCH_LABEL = { Items: 'Items', KeyItems: 'Key Items', TMHMs: 'TMs & HMs', Medicine: 'Medicine', Berries: 'Berries', Balls: 'Poké Balls', BattleItems: 'Battle Items', MailItems: 'Mail', FreeSpace: 'Free Space', PCItems: 'PC Items', Candy: 'Candy', Treasure: 'Treasures', Ingredients: 'Ingredients' };
+
+// One tab per pouch (plus Money). Each lists every item this game allows in that pouch, with its count.
 function trItems() {
   const money = TR.props.filter((p) => trClass(p) === 'Items');
-  let h = money.length ? `<h3 style="margin-top:0">Money and currencies</h3><div class="fg">${money.map((p) => trCtl(p)).join('')}</div>` : '';
+  const moneyHtml = money.length ? `<div class="fg">${money.map((p) => trCtl(p)).join('')}</div>` : '';
   const inv = TR.inv;
-  if (!inv?.ok) return h + `<p class="bad">${esc(inv?.error ?? 'Items unavailable.')}</p>`;
-  if (!inv.supported) return h + '<p class="hint">Item editing isn’t available for this game yet.</p>';
-  const nm = (i) => N.items[i] || '#' + i;
-  const real = (i) => i > 0 && N.items[i] && !/^(\?\?\?|\()/.test(N.items[i]);
-  h += '<h3>Pouches</h3>' + inv.pouches.map((p) => {
-    const ids = (p.legal ?? N.items.map((_, i) => i)).filter(real).sort((a, b) => N.items[a].localeCompare(N.items[b]));
-    const rows = p.items.map((it) => `<tr><td>${esc(nm(it.item))}</td><td><input type="number" min="0" max="${p.max}" step="1" value="${it.count}" data-ic="${p.index}:${it.slot}" aria-label="Count"></td><td><button class="btn" data-irm="${p.index}:${it.slot}" aria-label="Remove ${esc(nm(it.item))}">✕</button></td></tr>`).join('');
-    const body = p.editable
-      ? `${rows ? `<table>${rows}</table>` : '<p class="hint">Empty.</p>'}`
-        + `<div class="tradd"><select id="ia${p.index}" aria-label="Item to add">${ids.map((i) => `<option value="${i}">${esc(N.items[i])}</option>`).join('')}</select><input type="number" id="ic${p.index}" min="1" max="${p.max}" value="${Math.min(p.max, 99)}" aria-label="Amount"><button class="btn pri" data-iadd="${p.index}">Add</button></div>`
-        + `<div class="tradd"><button class="btn" data-imax="${p.index}">Max counts</button><button class="btn" data-iall="${p.index}">Add all legal</button><button class="btn" data-iclr="${p.index}">Clear pouch</button></div>`
-      : '<p class="hint">This pouch can’t be edited.</p>';
-    return `<details data-pouch="${p.index}"${TR.open.has(p.index) ? ' open' : ''}><summary>${esc(p.name)} <small class="hint">${p.items.length} of ${p.size} slots</small></summary>${body}</details>`;
+  if (!inv?.ok) return moneyHtml + `<p class="bad">${esc(inv?.error ?? 'Items unavailable.')}</p>`;
+  if (!inv.supported) return moneyHtml + '<p class="hint">Item editing isn’t available for this game yet.</p>';
+  const subs = inv.pouches.map((p) => ({ id: String(p.index), label: POUCH_LABEL[p.type] ?? p.name, n: p.items.length }));
+  if (money.length) subs.push({ id: 'money', label: 'Money' });
+  const cur = subs.find((x) => x.id === TR.sub) ?? subs[0];
+  const bar = `<div class="tabs" role="tablist">${subs.map((x) => `<button role="tab" class="${x.id === cur.id ? 'on' : ''}" data-trs="${x.id}">${esc(x.label)}${x.n != null ? ` <small>${x.n}</small>` : ''}</button>`).join('')}</div>`;
+  return bar + (cur.id === 'money' ? moneyHtml : trPouch(inv.pouches[+cur.id], cur.label));
+}
+
+function trPouch(p, label) {
+  if (!p.editable) return '<p class="hint">This pouch can’t be edited.</p>';
+  const names = TR.names ?? N.items;
+  const placeholder = (i) => !!names[i] && /^(\?\?\?|\()/.test(names[i]);
+  const nm = (i) => names[i] || `Item #${i}`;
+  const owned = new Map(p.items.map((it) => [it.item, it.count]));
+  // Only what the game allows in this pouch (anything already in it is kept visible so it can be removed).
+  const base = p.legal ?? names.map((_, i) => i).filter((i) => i > 0 && names[i] && !placeholder(i));
+  const ids = [...new Set([...base.filter((i) => i > 0 && !placeholder(i)), ...owned.keys()])]
+    .sort((a, b) => nm(a).localeCompare(nm(b), undefined, { numeric: true }));
+  const rows = ids.map((i) => {
+    const c = owned.get(i) ?? 0, n = nm(i), ref = `${p.index}:${i}`;
+    const ctl = p.max === 1
+      ? `<label><input type="checkbox" data-iset="${ref}"${c ? ' checked' : ''}> Have</label>`
+      : `<input type="number" class="icnt" min="0" max="${p.max}" step="1" value="${c}" data-iset="${ref}" aria-label="${esc(n)} count">`;
+    return `<div class="dxr" data-q="${esc(n.toLowerCase())}" data-own="${c ? 1 : 0}"><span>${esc(n)}</span><span class="dxc">${ctl}</span></div>`;
   }).join('');
-  return h;
+  return `<div class="trdxh"><input id="trq" type="search" placeholder="Search ${esc(label.toLowerCase())}" value="${esc(TR.q)}" style="flex:1;min-width:160px"><label class="dxc"><input type="checkbox" id="iown"${TR.owned ? ' checked' : ''}> Owned only</label></div>`
+    + `<p class="hint">${owned.size} owned · ${p.items.length} of ${p.size} slots used · up to ${p.max} each. Set a count to add an item, or 0 to remove it.</p>`
+    + `<div class="tradd"><button class="btn" data-imax="${p.index}">Max counts</button><button class="btn" data-iall="${p.index}">Add all</button><button class="btn" data-iclr="${p.index}">Clear pouch</button></div>`
+    + `<div>${rows || '<p class="hint">No items are listed for this pouch.</p>'}</div>`;
 }
 
 function trDex() {
@@ -559,15 +577,19 @@ function trDex() {
 }
 
 function trBody() {
-  if (TR.tab === 'Items') { TR.inv ??= call(() => J(E.GetInventory())); return trItems(); }
+  if (TR.tab === 'Items') {
+    TR.inv ??= call(() => J(E.GetInventory()));
+    if (!TR.names) { const nl = call(() => J(E.GetItemNames())); TR.names = Array.isArray(nl) && nl.length ? nl : N.items; }
+    return trItems();
+  }
   if (TR.tab === 'Pokédex') { TR.dex ??= call(() => J(E.GetDex())); return trDex(); }
   if (TR.tab === 'All fields') return `<input id="trq" type="search" placeholder="Filter fields (name or path)" style="width:100%;margin-bottom:10px"><div class="fg all">${TR.props.map((p) => trCtl(p, true)).join('')}</div>`;
   return trFields(TR.tab);
 }
 
 function trFilter() {
-  const inp = $('trq'); if (!inp) return; const q = inp.value.toLowerCase();
-  $('trm').querySelectorAll('.fg.all > label, .dxr').forEach((l) => { l.hidden = !!q && !(l.dataset.q ?? `${l.textContent} ${l.title}`).toLowerCase().includes(q); });
+  const inp = $('trq'); if (!inp) return; const q = inp.value.toLowerCase(), own = !!$('iown')?.checked;
+  $('trm').querySelectorAll('.fg.all > label, .dxr').forEach((l) => { l.hidden = (!!q && !(l.dataset.q ?? `${l.textContent} ${l.title}`).toLowerCase().includes(q)) || (own && l.dataset.own === '0'); });
 }
 
 function trRender(reset) {
@@ -609,10 +631,16 @@ function trOpen() {
       const d = e.target.closest?.('details[data-pouch]'); if (!d) return;
       d.open ? TR.open.add(+d.dataset.pouch) : TR.open.delete(+d.dataset.pouch);
     }, true);
-    dlg.addEventListener('input', (e) => { if (e.target.id === 'trq') trFilter(); });
+    dlg.addEventListener('input', (e) => { if (e.target.id === 'trq') { TR.q = e.target.value; trFilter(); } });
     dlg.addEventListener('change', (e) => {
       const t = e.target;
       if (t.dataset.sp) return trSet(t);
+      if (t.id === 'iown') { TR.owned = t.checked; return trFilter(); }
+      if (t.dataset.iset) {
+        const [pi, id] = t.dataset.iset.split(':').map(Number);
+        const n = t.type === 'checkbox' ? (t.checked ? 1 : 0) : Math.trunc(+t.value) || 0;
+        return trOp(() => E.InvSetItem(pi, id, n));
+      }
       if (t.dataset.ic) { const [pi, sl] = t.dataset.ic.split(':').map(Number); return trOp(() => E.InvSetCount(pi, sl, Math.trunc(+t.value) || 0)); }
       if (t.dataset.dx) {
         const row = t.closest('.dxr'), s = row.querySelector('[data-k=s]'), c = row.querySelector('[data-k=c]');
@@ -630,7 +658,8 @@ function trOpen() {
       const b = e.target.closest('button'); if (!b) return;
       const d = b.dataset;
       if (d.trclose) return dlg.close();
-      if (d.trt) { TR.tab = d.trt; return trRender(true); }
+      if (d.trt) { TR.tab = d.trt; TR.q = ''; return trRender(true); }
+      if (d.trs) { TR.sub = d.trs; TR.q = ''; return trRender(true); }
       const pair = (s) => s.split(':').map(Number);
       if (d.irm) { const [pi, sl] = pair(d.irm); return trOp(() => E.InvRemove(pi, sl)); }
       if (d.iadd) { const pi = +d.iadd; return trOp(() => E.InvAdd(pi, +$(`ia${pi}`).value, Math.trunc(+$(`ic${pi}`).value) || 1)); }
@@ -650,7 +679,7 @@ function trOpen() {
   setTimeout(() => {   // reading every field can take a moment
     const r = call(() => J(E.GetSaveProps()));
     if (!r.ok) { dlg.close(); return toast(r.error); }
-    TR.props = r.props; TR.inv = TR.dex = null; trRender(true);
+    TR.props = r.props; TR.inv = TR.dex = TR.names = null; TR.sub = null; TR.q = ''; trRender(true);
   }, 30);
 }
 
