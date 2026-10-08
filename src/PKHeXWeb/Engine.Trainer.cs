@@ -220,13 +220,62 @@ public static partial class Engine
 
     static int[]? LegalIds(object pouch)
     {
-        if (Mem(pouch, "LegalItems") is System.Collections.IEnumerable e and not string)
+        var v = Mem(pouch, "LegalItems");
+        // Some PKHeX builds expose the list as ReadOnlyMemory<ushort> instead of an array.
+        if (v is not null && v is not System.Collections.IEnumerable)
+            v = v.GetType().GetMethod("ToArray", Type.EmptyTypes)?.Invoke(v, null);
+        if (v is System.Collections.IEnumerable e and not string)
         {
             var r = e.Cast<object?>().Select(SafeInt).Where(x => x > 0).Distinct().ToArray();
             return r.Length > 0 ? r : null;
         }
         return null;
     }
+
+    // Item numbers differ between generations, so names have to come from the save's own game rather than
+    // the default (newest) list, otherwise older games show the wrong names.
+    static string[] SaveItemNames()
+    {
+        try
+        {
+            if (Sav is not null)
+            {
+                var strings = GameInfo.Strings;
+                var ctx = Mem(Sav, "Context"); var ver = Mem(Sav, "Version"); var gen = Mem(Sav, "Generation");
+                foreach (var m in strings.GetType().GetMethods(Inst | BindingFlags.Static)
+                             .Where(m => m.Name == "GetItemStrings").OrderBy(m => m.GetParameters().Length))
+                {
+                    try
+                    {
+                        var ps = m.GetParameters();
+                        var args = new object?[ps.Length];
+                        var usable = true;
+                        for (int i = 0; i < ps.Length && usable; i++)
+                        {
+                            var t = ps[i].ParameterType;
+                            if (ctx is not null && t == ctx.GetType()) args[i] = ctx;
+                            else if (ver is not null && t == ver.GetType()) args[i] = ver;
+                            else if (t == typeof(bool)) args[i] = false;
+                            else if (gen is not null && NumericParam(t)) args[i] = Convert.ChangeType(gen, t, CultureInfo.InvariantCulture);
+                            else usable = false;
+                        }
+                        if (!usable) continue;
+                        if (m.Invoke(strings, args) is System.Collections.IEnumerable list and not string)
+                        {
+                            var names = list.Cast<object?>().Select(x => x?.ToString() ?? "").ToArray();
+                            if (names.Length > 0) return names;
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+        return NameList("Item", "itemlist");
+    }
+
+    [JSExport]
+    public static string GetItemNames() => J(SaveItemNames());
 
     static (int Index, int Count) ReadItem(object? el) => el is null ? (0, 0) : (Math.Max(0, SafeInt(Mem(el, "Index"))), Math.Max(0, SafeInt(Mem(el, "Count"))));
 
@@ -282,7 +331,7 @@ public static partial class Engine
                         var (ix, ct) = ReadItem(arr.GetValue(s));
                         if (ix > 0) items.Add(new { slot = s, item = ix, count = ct });
                     }
-                return new { index = i, name = PouchName(p), max = Cap(p), size = arr?.Length ?? 0, legal = LegalIds(p), items, editable = arr is not null };
+                return new { index = i, name = PouchName(p), type = Mem(p, "Type")?.ToString() ?? "", max = Cap(p), size = arr?.Length ?? 0, legal = LegalIds(p), items, editable = arr is not null };
             }).ToList();
             return J(new { ok = true, supported = true, pouches });
         }
@@ -355,6 +404,20 @@ public static partial class Engine
         var legal = LegalIds(p);
         if (legal is not null && !legal.Contains(item)) return "That item can't go in this pouch.";
         return GiveItem(arr, cap, item, Math.Max(1, count)) ? null : "This pouch is full.";
+    });
+
+    // Sets how many of one item the pouch holds, by item number: adds it if missing, removes it at 0.
+    [JSExport]
+    public static string InvSetItem(int pouch, int item, int count) => InvEdit(pouch, (p, arr, cap) =>
+    {
+        if (item <= 0) return "Choose an item.";
+        count = Math.Clamp(count, 0, cap);
+        int at = FindSlot(arr, x => x == item);
+        if (count == 0) { if (at >= 0) WriteItem(arr, at, 0, 0); return null; }
+        if (at >= 0) { WriteItem(arr, at, item, count); return null; }
+        var legal = LegalIds(p);
+        if (legal is not null && !legal.Contains(item)) return "That item can't go in this pouch.";
+        return GiveItem(arr, cap, item, count) ? null : "This pouch is full.";
     });
 
     [JSExport]
