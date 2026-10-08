@@ -199,20 +199,49 @@ public static partial class Engine
         public PropertyInfo Prop = null!;
         public object Value = null!;
         public List<object> Pouches = [];
+        public bool Bag;        // newer PKHeX: a PlayerBag object that is written back with CopyTo(SaveFile)
+        public bool CanWrite;
     }
 
     // PKHeX builds the pouches fresh from the save on every read; changes are written back by setting Inventory again.
+    static string InvWhy = "";   // why the last LoadInv found no bag (shown in the UI)
+
+    static bool IsBagType(Type t) { for (var x = t; x is not null; x = x.BaseType) if (x.Name == "PlayerBag") return true; return false; }
+
     static Inv? LoadInv()
     {
-        var p = FindProp(Sav!.GetType(), "Inventory");
-        if (p is null || p.GetIndexParameters().Length > 0) return null;
-        object? v; try { v = p.GetValue(Sav); } catch { return null; }
-        if (v is not System.Collections.IEnumerable e) return null;
-        var list = e.Cast<object?>().Where(x => x is not null).Select(x => x!).ToList();
-        return list.Count == 0 ? null : new Inv { Prop = p, Value = v, Pouches = list };
+        InvWhy = ""; CurBag = null;
+        var st = Sav!.GetType();
+        var p = FindProp(st, "Inventory") ?? FindProp(st, "Bag") ?? FindProp(st, "PlayerBag")
+                ?? st.GetProperties(Inst).FirstOrDefault(x => x.GetIndexParameters().Length == 0 && IsBagType(x.PropertyType));
+        if (p is null || p.GetIndexParameters().Length > 0) { InvWhy = $"{st.Name} has no Inventory/Bag property."; return null; }
+        object? v;
+        try { v = p.GetValue(Sav); }
+        catch (Exception e) { InvWhy = $"Reading {st.Name}.{p.Name} failed: {e.InnerException?.Message ?? e.Message}"; return null; }
+        if (v is null) { InvWhy = $"{st.Name}.{p.Name} is null."; return null; }
+        var seq = v as System.Collections.IEnumerable;
+        var bag = false;
+        if (seq is null) { seq = Mem(v, "Pouches") as System.Collections.IEnumerable; bag = seq is not null; }
+        CurBag = v as PlayerBag;
+        if (seq is null) { InvWhy = $"{p.Name} returned {v.GetType().Name}, which has no pouch list."; return null; }
+        var list = seq.Cast<object?>().Where(x => x is not null).Select(x => x!).ToList();
+        if (list.Count == 0) { InvWhy = "PKHeX returned an empty pouch list."; return null; }
+        return new Inv { Prop = p, Value = v, Pouches = list, Bag = bag, CanWrite = bag || p.SetMethod is { IsPublic: true } };
     }
 
-    static void CommitInv(Inv inv) { if (inv.Prop.SetMethod is { IsPublic: true }) inv.Prop.SetValue(Sav, inv.Value); }
+    static void CommitInv(Inv inv)
+    {
+        if (inv.Bag)
+        {
+            var savType = Sav!.GetType();
+            var m = inv.Value.GetType().GetMethods(Inst)
+                .Where(x => x.Name == "CopyTo" && x.GetParameters() is { Length: 1 } ps && ps[0].ParameterType.IsAssignableFrom(savType))
+                .OrderByDescending(x => x.GetParameters()[0].ParameterType == typeof(SaveFile)).FirstOrDefault();
+            if (m is null) throw new InvalidOperationException("This bag has no CopyTo(save) method.");
+            m.Invoke(inv.Value, [Sav]);
+        }
+        else if (inv.Prop.SetMethod is { IsPublic: true }) inv.Prop.SetValue(Sav, inv.Value);
+    }
 
     static Array? PouchItems(object pouch) => Mem(pouch, "Items") as Array;
     static int Cap(object pouch) { var m = SafeInt(Mem(pouch, "MaxCount")); return m > 0 ? m : 999; }
@@ -227,9 +256,24 @@ public static partial class Engine
         if (v is System.Collections.IEnumerable e and not string)
         {
             var r = e.Cast<object?>().Select(SafeInt).Where(x => x > 0).Distinct().ToArray();
+            if (r.Length > 0) return r;
+        }
+        return BagLegal(pouch);
+    }
+
+    static PlayerBag? CurBag;   // the bag from the last LoadInv (newer PKHeX), used for per-item max counts
+
+    // Newer PKHeX: the items a pouch may hold come from the game's item storage via GetAllItems().
+    static int[]? BagLegal(object pouch)
+    {
+        if (pouch is not InventoryPouch ip) return null;
+        try
+        {
+            var all = ip.GetAllItems().ToArray();
+            var r = all.Select(x => (int)x).Where(x => x > 0).Distinct().ToArray();
             return r.Length > 0 ? r : null;
         }
-        return null;
+        catch { return null; }
     }
 
     // Item numbers differ between generations, so names have to come from the save's own game rather than
@@ -320,7 +364,7 @@ public static partial class Engine
         {
             if (Sav is null) return NoSave();
             var inv = LoadInv();
-            if (inv is null) return J(new { ok = true, supported = false });
+            if (inv is null) return J(new { ok = true, supported = false, why = InvWhy });
             var pouches = inv.Pouches.Select((p, i) =>
             {
                 var arr = PouchItems(p);
@@ -331,7 +375,7 @@ public static partial class Engine
                         var (ix, ct) = ReadItem(arr.GetValue(s));
                         if (ix > 0) items.Add(new { slot = s, item = ix, count = ct });
                     }
-                return new { index = i, name = PouchName(p), type = Mem(p, "Type")?.ToString() ?? "", max = Cap(p), size = arr?.Length ?? 0, legal = LegalIds(p), items, editable = arr is not null };
+                return new { index = i, name = PouchName(p), type = Mem(p, "Type")?.ToString() ?? "", max = Cap(p), size = arr?.Length ?? 0, legal = LegalIds(p), items, editable = arr is not null, members = arr is null ? string.Join(", ", p.GetType().GetMembers(Inst).Select(m => m.Name).Distinct().Take(50)) : null };
             }).ToList();
             return J(new { ok = true, supported = true, pouches });
         }
@@ -346,7 +390,7 @@ public static partial class Engine
             if (Sav is null) return NoSave();
             var inv = LoadInv();
             if (inv is null || pi < 0 || pi >= inv.Pouches.Count) return Err("Items aren't available for this save.");
-            if (inv.Prop.SetMethod is not { IsPublic: true }) return Err("This game's items can't be written here.");
+            if (!inv.CanWrite) return Err("This game's items can't be written here.");
             var pouch = inv.Pouches[pi];
             if (PouchItems(pouch) is not { } arr) return Err("Can't read this pouch.");
             var before = Snap(arr);
@@ -411,6 +455,8 @@ public static partial class Engine
     public static string InvSetItem(int pouch, int item, int count) => InvEdit(pouch, (p, arr, cap) =>
     {
         if (item <= 0) return "Choose an item.";
+        if (CurBag is not null && Mem(p, "Type") is InventoryType t)
+            try { cap = CurBag.GetMaxCount(t, item); } catch { }   // e.g. HMs are limited to 1
         count = Math.Clamp(count, 0, cap);
         int at = FindSlot(arr, x => x == item);
         if (count == 0) { if (at >= 0) WriteItem(arr, at, 0, 0); return null; }
