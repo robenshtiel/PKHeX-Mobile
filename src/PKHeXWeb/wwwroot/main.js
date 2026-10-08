@@ -532,7 +532,7 @@ function trItems() {
   const moneyHtml = money.length ? `<div class="fg">${money.map((p) => trCtl(p)).join('')}</div>` : '';
   const inv = TR.inv;
   if (!inv?.ok) return moneyHtml + `<p class="bad">${esc(inv?.error ?? 'Items unavailable.')}</p>`;
-  if (!inv.supported) return moneyHtml + '<p class="hint">Item editing isn’t available for this game yet.</p>';
+  if (!inv.supported) return moneyHtml + `<p class="hint">Item editing isn’t available for this game yet.${inv.why ? `<br><small>${esc(inv.why)}</small>` : ''}</p>`;
   const subs = inv.pouches.map((p) => ({ id: String(p.index), label: POUCH_LABEL[p.type] ?? p.name, n: p.items.length }));
   if (money.length) subs.push({ id: 'money', label: 'Money' });
   const cur = subs.find((x) => x.id === TR.sub) ?? subs[0];
@@ -541,7 +541,7 @@ function trItems() {
 }
 
 function trPouch(p, label) {
-  if (!p.editable) return '<p class="hint">This pouch can’t be edited.</p>';
+  if (!p.editable) return `<p class="hint">This pouch can’t be edited.${p.members ? `<br><small>Members: ${esc(p.members)}</small>` : ''}</p>`;
   const names = TR.names ?? N.items;
   const placeholder = (i) => !!names[i] && /^(\?\?\?|\()/.test(names[i]);
   const nm = (i) => names[i] || `Item #${i}`;
