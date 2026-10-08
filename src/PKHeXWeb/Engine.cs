@@ -652,6 +652,17 @@ public static partial class Engine
         }
     }
 
+    // Zeroes the memory fields (memory, variable, intensity, feeling) of the handling trainer or the original trainer.
+    // Property names differ between PKHeX versions, so match by pattern.
+    static void ClearMemories(PKM pk, bool handler)
+    {
+        var rx = new System.Text.RegularExpressions.Regex(handler
+            ? "^(HandlingTrainerMemory(Variable|Intensity|Feeling)?|HT_(Memory|TextVar|Feeling|Intensity))$"
+            : "^(OriginalTrainerMemory(Variable|Intensity|Feeling)?|OT_(Memory|TextVar|Feeling|Intensity))$");
+        foreach (var pr in pk.GetType().GetProperties(Inst).Where(x => x.CanWrite && x.GetIndexParameters().Length == 0 && rx.IsMatch(x.Name)))
+            TrySet(pk, [pr.Name], 0);
+    }
+
     static (string Name, string Gate, Action<PKM> Fix) Fixer(string name, string gate, Action<PKM> fix) => (name, gate, fix);
 
     // Stage 1. Returns the best version found; `steps` lists the fixes that were kept.
@@ -673,6 +684,8 @@ public static partial class Engine
             Fixer("EVs", "EV", FixEvs),
             Fixer("experience", "Level|Exp", c => { TrySet(c, ["CurrentLevel"], c.CurrentLevel); Call(c, "ResetPartyStats"); }),
             Fixer("stats", "Stat", c => Call(c, "ResetPartyStats")),
+            Fixer("handler memories", "Memory", c => ClearMemories(c, true)),
+            Fixer("original trainer memories", "Memory", c => ClearMemories(c, false)),
             Fixer("Plus/mastery flags", "*", c => ApplyPlusFlags(c, false)),
         };
         for (int pass = 0; pass < 2 && best > 0; pass++)
