@@ -365,7 +365,10 @@ function view() {
     const ps = list(TAB.Met);
     const origin = (p) => {
       const v = p.value ?? '', ks = p.options.filter((o) => GAME[o]); if (!ks.includes(v)) ks.unshift(v);
-      return `<label class="f">Origin game<select data-p="${p.name}" data-v="${esc(v)}">${ks.map((o) => `<option value="${esc(o)}">${esc(GAME[o] ?? o)}</option>`).join('')}</select></label>`;
+      // Version number: looked up from the name, or the raw value when it isn't a named version.
+      const i = p.options.indexOf(v), num = i >= 0 && p.nums ? p.nums[i] : (/^\d+$/.test(v) ? v : '');
+      return `<label class="f">Origin game<select data-p="${p.name}" data-v="${esc(v)}">${ks.map((o) => `<option value="${esc(o)}">${esc(GAME[o] ?? o)}</option>`).join('')}</select></label>`
+        + `<label class="f">Origin game number<input type="number" min="0" max="255" step="1" data-vn="${p.name}" value="${esc(String(num))}"></label>`;
     };
     const one = (p) => (p.name === 'Version' && p.options ? origin(p) : ctl(p));
     const rank = (n, ks) => { const i = ks.findIndex((k) => n.includes(k)); return i < 0 ? ks.length : i; };
@@ -442,6 +445,7 @@ $('ed').addEventListener('change', async (e) => {
     return;
   }
   if (t.id === 'nsp') return loadEncounters();
+  if (t.dataset.vn) { const n = Math.trunc(+t.value); return t.value.trim() === '' || !Number.isFinite(n) ? view() : edit(t.dataset.vn, n); }
   if (t.dataset.p) return edit(t.dataset.p, t.type === 'checkbox' ? t.checked : t.value);
   if (t.id === 'impf' && t.files[0]) {
     const b = new Uint8Array(await t.files[0].arrayBuffer());
