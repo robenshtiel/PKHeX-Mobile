@@ -292,9 +292,11 @@ public static partial class Engine
         if (pk is null) return Err("No Pokémon in that slot.");
         var list = Editable(pk).Select(p =>
             new { name = p.Name, type = p.PropertyType.Name, value = p.GetValue(pk)?.ToString(), options = p.PropertyType.IsEnum ? Enum.GetNames(p.PropertyType) : null,
+                  // Numeric ids for the Version enum, in the same order as options, so the UI can cross-reference name and number.
+                  nums = p.Name == "Version" && p.PropertyType.IsEnum ? Enum.GetValues(p.PropertyType).Cast<object>().Select(x => Convert.ToInt32(x)).ToArray() : null,
                   min = Range(pk, p)?.Min, max = Range(pk, p)?.Max }).ToList();
         // IsShiny has no setter in PKHeX (it's derived from PID/TID/SID), so it is exposed as a synthetic field.
-        list.Add(new { name = "IsShiny", type = "Boolean", value = (string?)pk.IsShiny.ToString(), options = (string[]?)null, min = (string?)null, max = (string?)null });
+        list.Add(new { name = "IsShiny", type = "Boolean", value = (string?)pk.IsShiny.ToString(), options = (string[]?)null, nums = (int[]?)null, min = (string?)null, max = (string?)null });
         return J(new { ok = true, props = list });
     }
 
