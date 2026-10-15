@@ -1794,20 +1794,23 @@ public static partial class Engine
             if (pk.GetType().Name != "PK4") return;
             int ver = SafeInt(TryGet(pk, ["Version", "Game"]));
             if (ver != 7 && ver != 8) return;   // HeartGold / SoulSilver only
-            int dppt = SafeInt(TryGet(pk, ["BallDPPt"]));
-            int hgss = SafeInt(TryGet(pk, ["BallHGSS"]));
+            // Write the raw bytes: the BallDPPt/BallHGSS properties aren't present in every PKHeX version (they didn't show up
+            // in the field dump), so setting them by name silently did nothing and 0x86 stayed out of range.
+            var data = pk.Data;
+            int dppt = data[0x83], hgss = data[0x86];
             if (hgss >= 1 && hgss <= 24) return;
             int ball = dppt >= 1 && dppt <= 16 ? dppt : 4;   // Poké Ball when nothing sensible is there
-            TrySet(pk, ["BallDPPt"], ball);
-            TrySet(pk, ["BallHGSS"], ball);
+            data[0x83] = (byte)ball;
+            data[0x86] = (byte)ball;
         }
         catch { }
     }
 
-    static void FixNames(PKM c, bool speciesChanged)
+    static void FixNames(PKM c, bool speciesChanged, bool keepNickname = false)
     {
         if (c.Language < 1 || c.Language > 12) TrySet(c, ["Language"], 2);
         if (speciesChanged && c.IsEgg) c.IsEgg = false;
+        if (keepNickname && c.IsNicknamed) return;   // in-game trades have a fixed nickname that survives evolution
         if (!speciesChanged && c.IsNicknamed) return;
         Call(c, "ClearNickname");
         var name = GameInfo.Strings.Species.ElementAtOrDefault(c.Species);
@@ -1958,7 +1961,7 @@ public static partial class Engine
                 if (FormCountOf(species) <= 1 && SafeInt(Prop(c, "Form")) > 0) TrySet(c, ["Form"], 0);
                 if (!keepAbility) Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
             }
-            FixNames(c, changed);
+            FixNames(c, changed, enc.GetType().Name.Contains("Trade"));
             FixBallHGSS(c);
             if (shiny && !c.IsShiny) SetShiny(c, true);
             if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
