@@ -1784,6 +1784,26 @@ public static partial class Engine
 
     // Names depend on the language, and a blank save can report an invalid one. Eggs that become another
     // species are treated as hatched. Only un-nicknamed Pokémon are touched, so event nicknames are kept.
+    // HG/SS stores the ball twice: byte 0x83 (the DPPt ball, Poké..Cherish) and byte 0x86 (the HG/SS ball, which also holds
+    // the Apricorn balls). Some generated encounters (in-game trades) leave 0x86 outside its legal range, which PKHeX reports
+    // as "Extended Ball value for HG/SS (0x86) is not within range". Put a valid ball in both bytes.
+    static void FixBallHGSS(PKM pk)
+    {
+        try
+        {
+            if (pk.GetType().Name != "PK4") return;
+            int ver = SafeInt(TryGet(pk, ["Version", "Game"]));
+            if (ver != 7 && ver != 8) return;   // HeartGold / SoulSilver only
+            int dppt = SafeInt(TryGet(pk, ["BallDPPt"]));
+            int hgss = SafeInt(TryGet(pk, ["BallHGSS"]));
+            if (hgss >= 1 && hgss <= 24) return;
+            int ball = dppt >= 1 && dppt <= 16 ? dppt : 4;   // Poké Ball when nothing sensible is there
+            TrySet(pk, ["BallDPPt"], ball);
+            TrySet(pk, ["BallHGSS"], ball);
+        }
+        catch { }
+    }
+
     static void FixNames(PKM c, bool speciesChanged)
     {
         if (c.Language < 1 || c.Language > 12) TrySet(c, ["Language"], 2);
@@ -1890,7 +1910,7 @@ public static partial class Engine
     {
         try
         {
-            var keep = new System.Text.RegularExpressions.Regex("^(Form|FormArgument|IsAlpha|AbilityNumber|Ability|HeldItem|CurrentLevel|MetLevel|MetLocation|Version|CurrentHandler|HandlingTrainerName|Gender|Nature)$");
+            var keep = new System.Text.RegularExpressions.Regex("^(Form|FormArgument|IsAlpha|AbilityNumber|Ability|HeldItem|CurrentLevel|MetLevel|MetLocation|Version|CurrentHandler|HandlingTrainerName|Gender|Nature|Ball|BallDPPt|BallHGSS)$");
             var props = pk.GetType().GetProperties().Where(p => p.GetIndexParameters().Length == 0 && p.CanRead && keep.IsMatch(p.Name))
                 .Select(p => { object? v = null; try { v = p.GetValue(pk); } catch { } return $"{p.Name}={v}"; });
             var alone = new LegalityAnalysis(pk.Clone());
@@ -1917,6 +1937,7 @@ public static partial class Engine
         catch (Exception e) { return (null, e.Message); }
         if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
         FixHandler(pk, enc);
+        FixBallHGSS(pk);
 
         var first = true; string report = ""; string fixReport = ""; int fixBad = int.MaxValue;
         int min = Math.Max(1, Convert.ToInt32(Prop(enc, "LevelMin") ?? 1));
@@ -1938,6 +1959,7 @@ public static partial class Engine
                 if (!keepAbility) Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
             }
             FixNames(c, changed);
+            FixBallHGSS(c);
             if (shiny && !c.IsShiny) SetShiny(c, true);
             if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
             ApplyPlusFlags(c, false);   // current PKHeX requires Plus/mastery flags for the moves it generates
