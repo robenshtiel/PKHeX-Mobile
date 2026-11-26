@@ -2029,7 +2029,10 @@ public static partial class Engine
             c.RefreshChecksum();
             var la = new LegalityAnalysis(c);
             if (first) { report = la.Report(); first = false; }
-            if (la.Valid || (allowFix && IsGo(enc) && OnlyTrackerProblems(la))) return (c, "");
+            // Like Pokémon GO, a FireRed/LeafGreen Virtual Console Pokémon only gets its real HOME transfer tracker the
+            // moment it actually arrives on Pokémon HOME's servers - PKHeX can't invent a real one locally, so that one
+            // specific complaint is let through the same way it already is for GO.
+            if (la.Valid || (allowFix && (IsGo(enc) || IsVC(enc)) && OnlyTrackerProblems(la))) return (c, "");
             if (allowFix)
             {
                 // Evolved species often need small fixes (moves, relearn, flags) that the auto-legaliser knows how to make,
