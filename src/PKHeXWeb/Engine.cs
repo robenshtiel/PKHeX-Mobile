@@ -1650,8 +1650,21 @@ public static partial class Engine
 
     static bool IsGo(IEncounterable enc) => string.Equals(Prop(enc, "Version")?.ToString(), "GO", StringComparison.Ordinal);
 
+    // Any Switch-era save (Gen 8 or 9: SW/SH, BD/SP, PLA, SL/VL, ZA) can hold a Pokémon whose origin game is FireRed or
+    // LeafGreen, arriving via Virtual Console transfer -> Pokémon HOME. PKHeX's legality checker only started recognising
+    // that path in its 2026-10-18 update, so this needs a PKHeX.Core build at or after that release; on an older build the
+    // search below will simply come back empty (or the result will fail legality) rather than breaking anything else.
+    static bool IsHomeEra() => Sav is not null && Sav.Generation is 8 or 9;
+
+    static readonly GameVersion[] FireRedLeafGreen =
+        new[] { "FR", "LG" }.Select(n => Enum.TryParse<GameVersion>(n, out var v) ? (GameVersion?)v : null)
+            .Where(v => v is not null).Select(v => v!.Value).ToArray();
+
+    static bool IsVC(IEncounterable enc) => !IsGo(enc) && (Prop(enc, "Version")?.ToString() is "FR" or "LG");
+
     // Sword/Shield can hold Pokémon caught in Pokémon GO (they arrive through HOME), so those encounters are added after the
-    // game's own. For any save, if the game has no encounter at all, the other games of the generation are searched instead.
+    // game's own, and any Switch-era save can likewise hold a FireRed/LeafGreen Virtual Console encounter. For any save, if
+    // the game has no encounter at all, the other games of the generation are searched instead.
     static List<IEncounterable> FindEncountersAny(PKM template)
     {
         var native = FindEncounters(template, null);
@@ -1660,6 +1673,15 @@ public static partial class Engine
             try
             {
                 foreach (var e in FindEncounters(template, new[] { go }))
+                    if (!native.Contains(e)) native.Add(e);
+            }
+            catch { }
+        }
+        if (IsHomeEra() && FireRedLeafGreen.Length > 0)
+        {
+            try
+            {
+                foreach (var e in FindEncounters(template, FireRedLeafGreen))
                     if (!native.Contains(e)) native.Add(e);
             }
             catch { }
@@ -1775,7 +1797,7 @@ public static partial class Engine
             {
                 i, name = EncName(e), kind = e.GetType().Name.Replace("Encounter", ""),
                 species = Prop(e, "Species")?.ToString(), min = Prop(e, "LevelMin")?.ToString(), max = Prop(e, "LevelMax")?.ToString(),
-                version = Prop(e, "Version")?.ToString(),
+                version = Prop(e, "Version")?.ToString(), vc = IsVC(e),
             });
             return J(new { ok = true, encounters = list });
         }
@@ -1938,7 +1960,14 @@ public static partial class Engine
         PKM pk;
         try { pk = conv.ConvertToPKM(Sav!, shiny && IsGo(enc) ? ShinyCriteria() : EncounterCriteria.Unrestricted); }
         catch (Exception e) { return (null, e.Message); }
-        if (pk.GetType() != Sav!.BlankPKM.GetType()) return (null, "Encounter is for a different format.");
+        if (pk.GetType() != Sav!.BlankPKM.GetType())
+        {
+            // A cross-generation encounter (currently: FireRed/LeafGreen Virtual Console, for a Switch-era save) comes
+            // back in its own generation's format. Carry it forward the same way an imported older-format file is.
+            var converted = ConvertForward(pk, out var convErr);
+            if (converted is null) return (null, convErr ?? "Encounter is for a different format.");
+            pk = converted;
+        }
         FixHandler(pk, enc);
         FixBallHGSS(pk);
 
@@ -2094,7 +2123,7 @@ public static partial class Engine
             var alphaGame = AlphaSupported();
             int forms = FormCountOf(species);
             string reason = "no encounter found";
-            PKM? best = null; bool gotShiny = false, gotCross = false, gotGo = false;
+            PKM? best = null; bool gotShiny = false, gotCross = false, gotGo = false, gotVc = false;
 
             foreach (var fix in new[] { false, true })
             {
@@ -2107,13 +2136,13 @@ public static partial class Engine
                         foreach (var enc in encs)
                         {
                             var (pk, rep) = Build(enc, species, 1, true, fix);
-                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; gotCross = IsCrossGame(enc); gotGo = IsGo(enc); break; }
+                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; gotCross = IsCrossGame(enc); gotGo = IsGo(enc); gotVc = IsVC(enc); break; }
                         }
                     if (best is null)
                         foreach (var enc in encs)
                         {
                             var (pk, rep) = Build(enc, species, 1, false, fix);
-                            if (pk is not null) { best = pk; gotCross = IsCrossGame(enc); gotGo = IsGo(enc); break; }
+                            if (pk is not null) { best = pk; gotCross = IsCrossGame(enc); gotGo = IsGo(enc); gotVc = IsVC(enc); break; }
                             if (fix && reason == "no encounter found")
                             {
                                 reason = FirstProblem(rep);
@@ -2126,7 +2155,7 @@ public static partial class Engine
             }
             if (best is null) return Err(reason);
             Store(best, box, slot);
-            return J(new { ok = true, shiny = gotShiny, cross = gotCross, go = gotGo });
+            return J(new { ok = true, shiny = gotShiny, cross = gotCross, go = gotGo, vc = gotVc });
         }
         catch (Exception e) { return Err(e.Message); }
     }
@@ -2156,7 +2185,7 @@ public static partial class Engine
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa && pa != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
-                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc), go = IsGo(enc) });
+                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc), go = IsGo(enc), vc = IsVC(enc) });
             }
             // Second pass: let the auto-legaliser's fixes and special-evolution state (traded, Rage Fist) be applied.
             foreach (var enc in candidates.Where(x => !IsGo(x)).Take(25).Concat(candidates.Where(IsGo)))
@@ -2166,7 +2195,7 @@ public static partial class Engine
                 if (alphaGame && encounter < 0 && Prop(pk, "IsAlpha") is bool pa2 && pa2 != alpha) continue;
                 if (AutoLegal) { ApplyPlusFlags(pk, false); pk.RefreshChecksum(); }
                 Store(pk, box, slot);
-                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc), go = IsGo(enc) });
+                return J(new { ok = true, encounter = EncName(enc), cross = IsCrossGame(enc), go = IsGo(enc), vc = IsVC(enc) });
             }
             return Err("Couldn't build a legal version at that level.\n" + (fixedReport != "" ? fixedReport : firstReport));
         }

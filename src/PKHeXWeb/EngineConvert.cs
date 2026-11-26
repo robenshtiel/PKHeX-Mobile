@@ -74,6 +74,8 @@ public static partial class Engine
     static int FormatOf(PKM pk) => Convert.ToInt32(Prop(pk, "Format") ?? 0);
 
     // Converts to the save's format, one generation at a time if PKHeX can't do it in one go. Forward only.
+    // Also used by Build() in Engine.cs, so a cross-generation encounter (e.g. a FireRed/LeafGreen Virtual
+    // Console encounter being generated for a Switch-era save) is carried forward the same way an imported file is.
     static PKM? ConvertForward(PKM pk, out string? error)
     {
         error = null;
