@@ -727,7 +727,7 @@ function trOpen() {
     const list = plan.species.slice(0, plan.capacity);
     if (!confirm(`Fill up to ${list.length} slots from Box 1, slot 1 with a legal ${shiny ? 'shiny ' : ''}living dex? Pokémon in those slots will be replaced (undo only covers the last 200 edits).`)) return;
     running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
-    for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = true;
+    for (const id of ['ldn', 'lds', 'vcldn', 'vclds', 'ldall', 'bebtn']) $(id).disabled = true;
     let placed = 0, shinies = 0, cross = 0, goCount = 0, vcCount = 0; const skipped = [];
     for (let i = 0; i < list.length && !stop; i++) {
       stat.textContent = `Building ${i + 1} / ${list.length}…`;
@@ -735,11 +735,33 @@ function trOpen() {
       const r = call(() => J(E.LivingDexAdd(placed, list[i], shiny)));
       if (r.ok) { placed++; if (r.shiny) shinies++; if (r.cross) cross++; if (r.go) goCount++; if (r.vc) vcCount++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
     }
-    running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = false;
+    running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'vcldn', 'vclds', 'ldall', 'bebtn']) $(id).disabled = false;
     stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed}` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
       + (goCount ? `, ${goCount} from Pokémon GO` : '')
       + (vcCount ? `, ${vcCount} from FireRed/LeafGreen (Virtual Console)` : '')
       + (cross ? `, ${cross} from another game of this generation (traded in)` : '')
+      + (skipped.length ? `. Skipped ${skipped.length}: ${skipped.slice(0, 12).join('; ')}${skipped.length > 12 ? '…' : ''}.` : '.');
+    legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
+  }
+  async function vcLivingDex(shiny) {
+    if (running) return;
+    if (!S.info) return toast('Open or create a save first.');
+    const plan = call(() => J(E.VcLivingDexPlan()));
+    if (!plan.ok) return toast(plan.error);
+    const list = plan.species.slice(0, plan.capacity);
+    if (!list.length) return toast("This save can't hold Virtual Console (FireRed/LeafGreen) transfers, or none are legal here.");
+    if (!confirm(`Fill up to ${list.length} slots from Box 1, slot 1 with a legal ${shiny ? 'shiny ' : ''}Virtual Console living dex (FireRed/LeafGreen encounters only)? Pokémon in those slots will be replaced (undo only covers the last 200 edits).`)) return;
+    running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
+    for (const id of ['ldn', 'lds', 'vcldn', 'vclds', 'ldall', 'bebtn']) $(id).disabled = true;
+    let placed = 0, shinies = 0; const skipped = [];
+    for (let i = 0; i < list.length && !stop; i++) {
+      stat.textContent = `Building ${i + 1} / ${list.length}…`;
+      await new Promise((r) => setTimeout(r, 0));   // let the page repaint between species
+      const r = call(() => J(E.VcLivingDexAdd(placed, list[i], shiny)));
+      if (r.ok) { placed++; if (r.shiny) shinies++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
+    }
+    running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'vcldn', 'vclds', 'ldall', 'bebtn']) $(id).disabled = false;
+    stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed} from FireRed/LeafGreen (Virtual Console)` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
       + (skipped.length ? `. Skipped ${skipped.length}: ${skipped.slice(0, 12).join('; ')}${skipped.length > 12 ? '…' : ''}.` : '.');
     legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
   }
@@ -751,7 +773,7 @@ function trOpen() {
     if (!plan.slots.length) return toast('No Pokémon to check.');
     if (!confirm(`Check ${plan.slots.length} Pokémon and automatically fix any that are illegal? Fixes can change moves, met data and other fields (undo only covers the last 200 edits).`)) return;
     running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
-    for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = true;
+    for (const id of ['ldn', 'lds', 'vcldn', 'vclds', 'ldall', 'bebtn']) $(id).disabled = true;
     let legal = 0, fixed = 0, partial = 0, failed = 0, done = 0;
     for (const [bx, sl] of plan.slots) {
       if (stop) break;
@@ -766,13 +788,15 @@ function trOpen() {
       else failed++;
     }
     running = false; stopBtn.hidden = true;
-    for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = false;
+    for (const id of ['ldn', 'lds', 'vcldn', 'vclds', 'ldall', 'bebtn']) $(id).disabled = false;
     stat.textContent = `${stop ? `Stopped after ${done}. ` : ''}${legal} already legal, ${fixed} fixed, ${partial} improved but still need attention, ${failed} couldn't be fixed automatically.`;
     legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
   }
   $('ldall').onclick = legaliseAll;
   $('ldn').onclick = () => livingDex(false);
   $('lds').onclick = () => livingDex(true);
+  $('vcldn').onclick = () => vcLivingDex(false);
+  $('vclds').onclick = () => vcLivingDex(true);
 }
 // ---- Tools menu: batch editor (PKHeX-style filters and instructions) ----
 {
