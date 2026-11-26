@@ -2160,7 +2160,7 @@ public static partial class Engine
                         var fixedPk = LegaliseInPlace(d, new List<string>());
                         ApplyPlusFlags(fixedPk, false); fixedPk.RefreshChecksum();
                         var fl = new LegalityAnalysis(fixedPk);
-                        if (fl.Valid || (IsGo(enc) && OnlyTrackerProblems(fl))) return (fixedPk, "");
+                        if (fl.Valid || ((IsGo(enc) || IsVC(enc)) && OnlyTrackerProblems(fl))) return (fixedPk, "");
                         var rep2 = fl.Report(); int bad = rep2.Split('\n').Count(l => l.TrimStart().StartsWith("Invalid"));
                         if (fixReport == "" || bad < fixBad) { fixReport = rep2; fixBad = bad; }   // report from the closest attempt
                     }
