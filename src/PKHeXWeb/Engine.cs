@@ -1905,11 +1905,15 @@ public static partial class Engine
 
             if (pk.GetType().Name == "PK8")
             {
-                // Version: leave/restore the plain FireRed or LeafGreen value - PK8.VC3 doesn't look at it.
-                if (origVersion is not null) TrySet(pk, ["Version"], Convert.ToInt32(origVersion));
-                // Met Location: Sword only accepts SWFR, Shield only accepts SHLG.
-                var savVer = Prop(Sav!, "Version")?.ToString();
-                var loc = Field(savVer == "SH" ? "SHLG" : "SWFR");
+                // PK8's native Version field can't store FRX/LGX directly, so LocationsHOME remaps it: a FireRed
+                // (FRX) origin always becomes Version=SW + MetLocation=SWFR, and a LeafGreen (LGX) origin always
+                // becomes Version=SH + MetLocation=SHLG - regardless of whether the save being edited is actually
+                // Sword or Shield (the same version-exclusive pairing BD/SP get via SWBD/SHSP). Confirmed directly
+                // against LocationsHOME.GetVersionSWSH / GetMetSWSH / IsValidMetFRLG in PKHeX.Core source - this
+                // replaces an earlier, wrong guess that picked the pairing from the save's own version instead.
+                bool isLg = origVersion is not null && ((GameVersion)Convert.ToInt32(origVersion)) == GameVersion.LG;
+                TrySet(pk, ["Version"], (int)(isLg ? GameVersion.SH : GameVersion.SW));
+                var loc = Field(isLg ? "SHLG" : "SWFR");
                 if (loc is not null) TrySet(pk, ["MetLocation", "Met_Location"], Convert.ToInt32(loc));
             }
             else
