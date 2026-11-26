@@ -1662,9 +1662,30 @@ public static partial class Engine
 
     static bool IsVC(IEncounterable enc) => !IsGo(enc) && (Prop(enc, "Version")?.ToString() is "FR" or "LG");
 
+    // Builds a blank Pokémon of a specific generation's native format, for searching that generation's own encounter
+    // tables (EncounterMovesetGenerator expects the template to match the versions it's asked to search).
+    static PKM? MakeGenPkm(int gen)
+    {
+        var t = typeof(SaveFile).Assembly.GetType($"PKHeX.Core.PK{gen}");
+        if (t is null) return null;
+        try { return Activator.CreateInstance(t) as PKM; } catch { return null; }
+    }
+
+    static PKM? Gen3Template(int species, int form)
+    {
+        var pk = MakeGenPkm(3);
+        if (pk is null) return null;
+        pk.Species = (ushort)species;
+        TrySet(pk, ["Form"], form);
+        return pk;
+    }
+
     // Sword/Shield can hold Pokémon caught in Pokémon GO (they arrive through HOME), so those encounters are added after the
-    // game's own, and any Switch-era save can likewise hold a FireRed/LeafGreen Virtual Console encounter. For any save, if
-    // the game has no encounter at all, the other games of the generation are searched instead.
+    // game's own, and any Switch-era save can likewise hold a Pokémon whose origin is FireRed/LeafGreen (Virtual Console ->
+    // HOME). Searching for that has to use an actual Gen 3 template (a PK8/PK9-shaped template returns nothing, since
+    // EncounterMovesetGenerator looks up each version's own generation's encounter tables) - the result comes back as a
+    // real PK3, which Build() then forward-converts the same way an imported file is. For any save, if the game has no
+    // encounter at all, the other games of the generation are searched instead.
     static List<IEncounterable> FindEncountersAny(PKM template)
     {
         var native = FindEncounters(template, null);
@@ -1681,8 +1702,10 @@ public static partial class Engine
         {
             try
             {
-                foreach (var e in FindEncounters(template, FireRedLeafGreen))
-                    if (!native.Contains(e)) native.Add(e);
+                var g3 = Gen3Template((int)template.Species, SafeInt(Prop(template, "Form")));
+                if (g3 is not null)
+                    foreach (var e in FindEncounters(g3, FireRedLeafGreen))
+                        if (!native.Contains(e)) native.Add(e);
             }
             catch { }
         }
@@ -1964,9 +1987,17 @@ public static partial class Engine
         {
             // A cross-generation encounter (currently: FireRed/LeafGreen Virtual Console, for a Switch-era save) comes
             // back in its own generation's format. Carry it forward the same way an imported older-format file is.
+            var origVersion = Prop(pk, "Version");
             var converted = ConvertForward(pk, out var convErr);
             if (converted is null) return (null, convErr ?? "Encounter is for a different format.");
             pk = converted;
+            // The forward-conversion chain only models the real hand-offs PKHeX knows about (Pal Park, Poké Transporter,
+            // Bank, HOME...), none of which are supposed to touch the Version byte - but without a hop that specifically
+            // models "this one came through Virtual Console", PKHeX's generic converter falls back to stamping it with
+            // the destination save's own version. Put the original origin game back before legality runs; if the
+            // PKHeX.Core build this is running against doesn't actually recognise that path, the legality check below
+            // will say so rather than silently leaving the wrong origin in place.
+            if (origVersion is not null) TrySet(pk, ["Version"], Convert.ToInt32(origVersion));
         }
         FixHandler(pk, enc);
         FixBallHGSS(pk);
