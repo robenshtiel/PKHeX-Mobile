@@ -1881,6 +1881,51 @@ public static partial class Engine
 
     // Events and gifts come with their own fixed OT. If that isn't the save's trainer, the save's trainer has to be the
     // current handler (HT name, gender, language, memories) or the check says "Current handler cannot be the OT".
+    // The genuine real-world path for one of these is a single hop: Ambassador 3DS Virtual Console -> Pokémon Bank
+    // -> Pokémon HOME -> this save. The generic multi-hop converter above has no idea that's what happened - it
+    // just walks the Pokémon through every real transfer method PKHeX knows about one generation at a time (Pal
+    // Park into gen 4, a gen 4->5 trade, the gen 5->6 Poké Transporter, gen 6->7, Bank into HOME), and each of
+    // those hops leaves its own fingerprints behind (met location, geolocation, memories, ribbons) as if the
+    // Pokémon had actually visited every one of those games, which it never did. Strip the ones that don't apply
+    // to a direct VC->Bank->HOME arrival.
+    static void FixVcTransferArtifacts(PKM pk)
+    {
+        try
+        {
+            // Met location: the last hop in that fictional chain (the gen 5->6 Poké Transporter) stamps its own
+            // "Poké Transfer" location, which isn't where this Pokémon's history says it went. PKHeX.Core's own
+            // EncounterVerifier checks a FireRed/LeafGreen Virtual Console transfer's Met Location against
+            // LocationsHOME.VirtualConsole3 directly (PK8 additionally allows a per-version range via
+            // LocationsHOME.IsValidMetFRLG, but the VirtualConsole3 constant itself is accepted there too), so that's
+            // the one real value to use here. Falls back to Locations.HOME8 ("Generation 8 Gift from Pokémon HOME")
+            // if VirtualConsole3 isn't present in this build, and leaves Met Location alone if neither is found.
+            object? metLoc = typeof(SaveFile).Assembly.GetType("PKHeX.Core.LocationsHOME")
+                ?.GetFields(BindingFlags.Public | BindingFlags.Static).FirstOrDefault(f => f.Name == "VirtualConsole3")?.GetValue(null);
+            metLoc ??= typeof(SaveFile).Assembly.GetType("PKHeX.Core.Locations")
+                ?.GetFields(BindingFlags.Public | BindingFlags.Static).FirstOrDefault(f => f.Name == "HOME8")?.GetValue(null);
+            if (metLoc is not null) TrySet(pk, ["MetLocation", "Met_Location"], Convert.ToInt32(metLoc));
+
+            // Geolocation (Country/Region) is only ever recorded by the gen 5->6 Poké Transporter hop; a direct
+            // VC->HOME arrival never passed through it.
+            foreach (var n in new[] { "Geo1_Country", "Geo1_Region", "Geo2_Country", "Geo2_Region",
+                                       "Geo3_Country", "Geo3_Region", "Geo4_Country", "Geo4_Region", "Geo5_Country", "Geo5_Region" })
+                TrySet(pk, [n], 0);
+
+            // OT Memory fields are written by a real gen 4->5 link trade / the gen 5->6 Transporter; clear them back
+            // to "never traded this way."
+            foreach (var n in new[] { "OriginalTrainerMemory", "OT_Memory", "OriginalTrainerMemoryIntensity", "OT_Intensity",
+                                       "OriginalTrainerMemoryFeeling", "OT_Feeling", "OriginalTrainerMemoryVariable", "OT_TextVar" })
+                TrySet(pk, [n], 0);
+
+            // Ribbons that specific transfer methods hand out automatically (Pal Park, the Transporter, Bank) don't
+            // belong on something that skipped all of those games. Legitimate ribbons the encounter itself grants
+            // aren't in this list, so nothing earned honestly is touched.
+            foreach (var n in new[] { "RibbonCountry", "RibbonNational", "RibbonEarth", "RibbonWorld", "RibbonClassic", "RibbonChampionG3" })
+                TrySet(pk, [n], false);
+        }
+        catch { }
+    }
+
     static void FixHandler(PKM pk, IEncounterable enc)
     {
         try
@@ -1998,6 +2043,7 @@ public static partial class Engine
             // PKHeX.Core build this is running against doesn't actually recognise that path, the legality check below
             // will say so rather than silently leaving the wrong origin in place.
             if (origVersion is not null) TrySet(pk, ["Version"], Convert.ToInt32(origVersion));
+            if (IsVC(enc)) FixVcTransferArtifacts(pk);
         }
         FixHandler(pk, enc);
         FixBallHGSS(pk);
