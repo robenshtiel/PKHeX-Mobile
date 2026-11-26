@@ -109,7 +109,8 @@ function loadEncounters() {
   const r = call(() => J(E.ListEncounters(+$('nsp').value)));
   sel.innerHTML = '<option value="-1">Automatic (first legal)</option>' + (r.encounters ?? []).map((e) => {
     const lv = e.min ? (e.min === e.max ? ` Lv ${e.min}` : ` Lv ${e.min}-${e.max}`) : '';
-    return `<option value="${e.i}">${esc(nice(e.kind))}: ${esc(e.name)}${lv}</option>`;
+    const vc = e.vc ? ' (FR/LG, Virtual Console)' : '';
+    return `<option value="${e.i}">${esc(nice(e.kind))}: ${esc(e.name)}${lv}${vc}</option>`;
   }).join('');
   sel.value = '-1'; sel._cbSync?.();
   if (!r.ok) toast(r.error);
@@ -458,7 +459,7 @@ $('ed').addEventListener('change', async (e) => {
 $('ed').addEventListener('click', (e) => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.id === 'cl') $('ed').classList.remove('open');
-  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked, !!$('nal')?.checked))); r.ok ? pick(S.slot) : toast(r.error); }
+  else if (t.id === 'create') { const r = call(() => J(E.CreatePokemon(S.box, S.slot, +$('nsp').value, +$('nlv').value, +$('nenc').value, $('nsh').checked, !!$('nal')?.checked))); r.ok ? (pick(S.slot), r.vc && toast('Created from a FireRed/LeafGreen (Virtual Console) encounter.')) : toast(r.error); }
   else if (t.id === 'exp') { const b = E.ExportPokemon(S.box, S.slot); b.length ? download(b, exportName() + '.' + E.PokemonExtension(S.box, S.slot)) : toast('Export failed.'); }
   else if (t.dataset.t) { S.tab = t.dataset.t; view(); }
   else if (t.id === 'mvdbg') { const r = call(() => J(E.MoveDebug(S.box, S.slot, 84))); S.dbg = r.ok ? r.text : r.error; view(); }
@@ -727,16 +728,17 @@ function trOpen() {
     if (!confirm(`Fill up to ${list.length} slots from Box 1, slot 1 with a legal ${shiny ? 'shiny ' : ''}living dex? Pokémon in those slots will be replaced (undo only covers the last 200 edits).`)) return;
     running = true; stop = false; stopBtn.hidden = false; stopBtn.disabled = false; stat.hidden = false;
     for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = true;
-    let placed = 0, shinies = 0, cross = 0, goCount = 0; const skipped = [];
+    let placed = 0, shinies = 0, cross = 0, goCount = 0, vcCount = 0; const skipped = [];
     for (let i = 0; i < list.length && !stop; i++) {
       stat.textContent = `Building ${i + 1} / ${list.length}…`;
       await new Promise((r) => setTimeout(r, 0));   // let the page repaint between species
       const r = call(() => J(E.LivingDexAdd(placed, list[i], shiny)));
-      if (r.ok) { placed++; if (r.shiny) shinies++; if (r.cross) cross++; if (r.go) goCount++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
+      if (r.ok) { placed++; if (r.shiny) shinies++; if (r.cross) cross++; if (r.go) goCount++; if (r.vc) vcCount++; } else skipped.push(`#${list[i]} (${String(r.error ?? '').slice(0, 600)})`);
     }
     running = false; stopBtn.hidden = true; for (const id of ['ldn', 'lds', 'ldall', 'bebtn']) $(id).disabled = false;
     stat.textContent = `${stop ? 'Stopped. ' : ''}Placed ${placed}` + (shiny ? ` (${shinies} shiny, ${placed - shinies} normal because no legal shiny exists)` : '')
       + (goCount ? `, ${goCount} from Pokémon GO` : '')
+      + (vcCount ? `, ${vcCount} from FireRed/LeafGreen (Virtual Console)` : '')
       + (cross ? `, ${cross} from another game of this generation (traded in)` : '')
       + (skipped.length ? `. Skipped ${skipped.length}: ${skipped.slice(0, 12).join('; ')}${skipped.length > 12 ? '…' : ''}.` : '.');
     legalDirty = true; S.slot = -1; empty(); loadGrid(); updateHist();
