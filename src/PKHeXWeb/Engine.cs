@@ -2194,6 +2194,98 @@ public static partial class Engine
         catch (Exception e) { return Err(e.Message); }
     }
 
+    // ---------- Virtual Console (FireRed/LeafGreen -> HOME) living dex ----------
+    // Scoped version of the living dex above: only species that have an actual Virtual Console encounter
+    // (FireRed or LeafGreen, arriving via HOME) are included, and every Pokémon is built from that encounter only.
+    // Only possible on a HOME-era save (Gen 8/9); HOME-tracker-only legality problems are expected and accepted,
+    // same as the general living dex does for VC and GO.
+
+    [JSExport]
+    public static string VcLivingDexPlan()
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            if (!IsHomeEra() || FireRedLeafGreen.Length == 0)
+                return J(new { ok = true, species = Array.Empty<int>(), capacity = Sav.BoxCount * Sav.BoxSlotCount });
+            int top = GameInfo.Strings.Species.Count() - 1;
+            int declared = SafeInt(Prop(Sav, "MaxSpeciesID"));
+            int max = declared > 0 ? Math.Min(declared, top) : top;
+            var personal = Prop(Sav, "Personal");
+            var mi = personal?.GetType().GetMethods().FirstOrDefault(x => x.Name == "IsSpeciesInGame" && x.GetParameters().Length == 1);
+            var list = new List<int>();
+            for (int sp = 1; sp <= max; sp++)
+            {
+                bool present = true;
+                if (mi is not null) { try { present = (bool)mi.Invoke(personal, [Convert.ChangeType(sp, mi.GetParameters()[0].ParameterType)])!; } catch { present = true; } }
+                if (!present) continue;
+                int forms = FormCountOf(sp);
+                bool hasVc = false;
+                for (int form = 0; form < forms && !hasVc; form++)
+                {
+                    var g3 = Gen3Template(sp, form);
+                    if (g3 is null) continue;
+                    try { hasVc = FindEncounters(g3, FireRedLeafGreen).Count > 0; } catch { }
+                }
+                if (hasVc) list.Add(sp);
+            }
+            return J(new { ok = true, species = list, capacity = Sav.BoxCount * Sav.BoxSlotCount });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
+    // Builds one legal Pokémon of this species from its Virtual Console (FireRed/LeafGreen) encounter only, and
+    // stores it at position `index` (box-major). Mirrors LivingDexAdd but restricted to that one encounter source.
+    [JSExport]
+    public static string VcLivingDexAdd(int index, int species, bool shiny)
+    {
+        try
+        {
+            if (Sav is null) return NoSave();
+            if (!IsHomeEra() || FireRedLeafGreen.Length == 0) return Err("This save can't hold Virtual Console transfers.");
+            int box = index / Sav.BoxSlotCount, slot = index % Sav.BoxSlotCount;
+            if (box >= Sav.BoxCount) return Err("Out of box space.");
+            int forms = FormCountOf(species);
+            string reason = "no Virtual Console encounter found";
+            PKM? best = null; bool gotShiny = false;
+
+            foreach (var fix in new[] { false, true })
+            {
+                for (int form = 0; form < forms && best is null; form++)
+                {
+                    var g3 = Gen3Template(species, form);
+                    if (g3 is null) continue;
+                    List<IEncounterable> encs;
+                    try { encs = Cap(FindEncounters(g3, FireRedLeafGreen), 80); } catch { continue; }
+                    if (encs.Count == 0) continue;
+                    if (shiny)
+                        foreach (var enc in encs)
+                        {
+                            var (pk, rep) = Build(enc, species, 1, true, fix);
+                            if (pk is not null && pk.IsShiny) { best = pk; gotShiny = true; break; }
+                        }
+                    if (best is null)
+                        foreach (var enc in encs)
+                        {
+                            var (pk, rep) = Build(enc, species, 1, false, fix);
+                            if (pk is not null) { best = pk; break; }
+                            if (fix && reason == "no Virtual Console encounter found")
+                            {
+                                reason = FirstProblem(rep);
+                                int d = rep.IndexOf("\n[debug", StringComparison.Ordinal);
+                                if (d >= 0) reason += rep.Substring(d);
+                            }
+                        }
+                }
+                if (best is not null) break;
+            }
+            if (best is null) return Err(reason);
+            Store(best, box, slot);
+            return J(new { ok = true, shiny = gotShiny });
+        }
+        catch (Exception e) { return Err(e.Message); }
+    }
+
     [JSExport]
     public static string CreatePokemon(int box, int slot, int species, int level, int encounter, bool shiny, bool alpha)
     {
