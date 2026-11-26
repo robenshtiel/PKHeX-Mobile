@@ -1885,25 +1885,45 @@ public static partial class Engine
     // -> Pokémon HOME -> this save. The generic multi-hop converter above has no idea that's what happened - it
     // just walks the Pokémon through every real transfer method PKHeX knows about one generation at a time (Pal
     // Park into gen 4, a gen 4->5 trade, the gen 5->6 Poké Transporter, gen 6->7, Bank into HOME), and each of
-    // those hops leaves its own fingerprints behind (met location, geolocation, memories, ribbons) as if the
-    // Pokémon had actually visited every one of those games, which it never did. Strip the ones that don't apply
-    // to a direct VC->Bank->HOME arrival.
-    static void FixVcTransferArtifacts(PKM pk)
+    // those hops leaves its own fingerprints behind (version, met location, geolocation, memories, ribbons) as if
+    // the Pokémon had actually visited every one of those games, which it never did. Replace those with what
+    // PKHeX.Core's own EncounterVerifier/PKM.VC3/PK8.VC3 actually check for this exact scenario, confirmed directly
+    // against kwsch/PKHeX source:
+    //  - PK8 (SW/SH) doesn't use Version to flag this at all - Version stays the plain FireRed/LeafGreen value
+    //    (what the game actually displays), and the real flag is Met Location being one of two version-paired
+    //    constants (LocationsHOME.SWFR for Sword, SHLG for Shield).
+    //  - Every other format (PB8 BD/SP, PA8 PLA, PK9/PA9 SV/ZA) doesn't override that check, so it needs Version
+    //    itself set to the dedicated FRX/LGX enum values, with Met Location set to the single
+    //    LocationsHOME.VirtualConsole3 constant (confirmed by LegalityRejuvenator.RejuvenateVC3 doing exactly this).
+    // origVersion is the plain FR/LG value the pre-conversion Gen 3 encounter carried.
+    static void FixVcTransferArtifacts(PKM pk, object? origVersion)
     {
         try
         {
-            // Met location: the last hop in that fictional chain (the gen 5->6 Poké Transporter) stamps its own
-            // "Poké Transfer" location, which isn't where this Pokémon's history says it went. PKHeX.Core's own
-            // EncounterVerifier checks a FireRed/LeafGreen Virtual Console transfer's Met Location against
-            // LocationsHOME.VirtualConsole3 directly (PK8 additionally allows a per-version range via
-            // LocationsHOME.IsValidMetFRLG, but the VirtualConsole3 constant itself is accepted there too), so that's
-            // the one real value to use here. Falls back to Locations.HOME8 ("Generation 8 Gift from Pokémon HOME")
-            // if VirtualConsole3 isn't present in this build, and leaves Met Location alone if neither is found.
-            object? metLoc = typeof(SaveFile).Assembly.GetType("PKHeX.Core.LocationsHOME")
-                ?.GetFields(BindingFlags.Public | BindingFlags.Static).FirstOrDefault(f => f.Name == "VirtualConsole3")?.GetValue(null);
-            metLoc ??= typeof(SaveFile).Assembly.GetType("PKHeX.Core.Locations")
-                ?.GetFields(BindingFlags.Public | BindingFlags.Static).FirstOrDefault(f => f.Name == "HOME8")?.GetValue(null);
-            if (metLoc is not null) TrySet(pk, ["MetLocation", "Met_Location"], Convert.ToInt32(metLoc));
+            var locsHome = typeof(SaveFile).Assembly.GetType("PKHeX.Core.LocationsHOME");
+            object? Field(string name) => locsHome?.GetFields(BindingFlags.Public | BindingFlags.Static).FirstOrDefault(f => f.Name == name)?.GetValue(null);
+
+            if (pk.GetType().Name == "PK8")
+            {
+                // Version: leave/restore the plain FireRed or LeafGreen value - PK8.VC3 doesn't look at it.
+                if (origVersion is not null) TrySet(pk, ["Version"], Convert.ToInt32(origVersion));
+                // Met Location: Sword only accepts SWFR, Shield only accepts SHLG.
+                var savVer = Prop(Sav!, "Version")?.ToString();
+                var loc = Field(savVer == "SH" ? "SHLG" : "SWFR");
+                if (loc is not null) TrySet(pk, ["MetLocation", "Met_Location"], Convert.ToInt32(loc));
+            }
+            else
+            {
+                // Version: needs the dedicated Virtual Console enum value (FRX/LGX), not plain FR/LG.
+                if (origVersion is not null)
+                {
+                    var name = ((GameVersion)Convert.ToInt32(origVersion)).ToString() + "X";   // "FR" -> "FRX", "LG" -> "LGX"
+                    if (Enum.TryParse<GameVersion>(name, out var vcVersion)) TrySet(pk, ["Version"], (int)vcVersion);
+                }
+                var loc = Field("VirtualConsole3");
+                if (loc is not null) TrySet(pk, ["MetLocation", "Met_Location"], Convert.ToInt32(loc));
+            }
+            TrySet(pk, ["EggLocation", "Egg_Location"], 0);   // RejuvenateVC3 clears this too - it never came from an egg
 
             // Geolocation (Country/Region) is only ever recorded by the gen 5->6 Poké Transporter hop; a direct
             // VC->HOME arrival never passed through it.
@@ -1912,7 +1932,9 @@ public static partial class Engine
                 TrySet(pk, [n], 0);
 
             // OT Memory fields are written by a real gen 4->5 link trade / the gen 5->6 Transporter; clear them back
-            // to "never traded this way."
+            // to "never traded this way." (Unlike the Met Location/Version fix above, this part - along with the
+            // ribbons below - is my own inference about what those fictional hops would leave behind, not something
+            // confirmed against PKHeX source the way Met Location and Version now are.)
             foreach (var n in new[] { "OriginalTrainerMemory", "OT_Memory", "OriginalTrainerMemoryIntensity", "OT_Intensity",
                                        "OriginalTrainerMemoryFeeling", "OT_Feeling", "OriginalTrainerMemoryVariable", "OT_TextVar" })
                 TrySet(pk, [n], 0);
@@ -2042,8 +2064,10 @@ public static partial class Engine
             // the destination save's own version. Put the original origin game back before legality runs; if the
             // PKHeX.Core build this is running against doesn't actually recognise that path, the legality check below
             // will say so rather than silently leaving the wrong origin in place.
-            if (origVersion is not null) TrySet(pk, ["Version"], Convert.ToInt32(origVersion));
-            if (IsVC(enc)) FixVcTransferArtifacts(pk);
+            if (IsVC(enc))
+                FixVcTransferArtifacts(pk, origVersion);   // sets Version itself (format-dependent) - see that method
+            else if (origVersion is not null)
+                TrySet(pk, ["Version"], Convert.ToInt32(origVersion));
         }
         FixHandler(pk, enc);
         FixBallHGSS(pk);
