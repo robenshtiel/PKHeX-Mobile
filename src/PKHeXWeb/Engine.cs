@@ -1660,7 +1660,12 @@ public static partial class Engine
         new[] { "FR", "LG" }.Select(n => Enum.TryParse<GameVersion>(n, out var v) ? (GameVersion?)v : null)
             .Where(v => v is not null).Select(v => v!.Value).ToArray();
 
-    static bool IsVC(IEncounterable enc) => !IsGo(enc) && (Prop(enc, "Version")?.ToString() is "FR" or "LG");
+    // Some FireRed/LeafGreen encounters (e.g. the Cerulean Cave Mewtwo static, or FR/LG trade gifts available in both)
+    // aren't tagged with the individual FR or LG version - they're tagged with the lumped "FRLG" grouping value instead
+    // (PKHeX's own GameVersion.Contains(FR)/Contains(LG) is how the rest of PKHeX treats that lump as "either version").
+    // ToString()-comparing only against "FR"/"LG" missed every one of those, so those species' VC encounters were found
+    // by the search but then silently failed to build (no VC-specific fixups, no HOME-tracker leniency).
+    static bool IsVC(IEncounterable enc) => !IsGo(enc) && (Prop(enc, "Version")?.ToString() is "FR" or "LG" or "FRLG");
 
     // Builds a blank Pokémon of a specific generation's native format, for searching that generation's own encounter
     // tables (EncounterMovesetGenerator expects the template to match the versions it's asked to search).
