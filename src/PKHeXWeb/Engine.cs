@@ -2102,7 +2102,18 @@ public static partial class Engine
             }
             FixNames(c, changed, enc.GetType().Name.Contains("Trade"));
             FixBallHGSS(c);
-            if (shiny && !c.IsShiny) SetShiny(c, true);
+            if (shiny && !c.IsShiny)
+            {
+                SetShiny(c, true);
+                // PKHeX's own SetShiny() re-syncs EncryptionConstant to the new PID itself, but only when it still
+                // recognises the Pokémon as a pre-Gen6 origin (pk.Gen3/Gen4/Gen5, which just check pk.Version). For a
+                // Virtual Console arrival, FixVcTransferArtifacts() above already rewrote Version to the Switch game's
+                // own SW/SH-paired value (what a real HOME transfer records), so that check no longer sees a Gen3
+                // origin and skips the resync - leaving EncryptionConstant stuck at the original (non-shiny) PID.
+                // Legality then requires PID == EncryptionConstant for exactly this kind of encounter, so do the
+                // resync ourselves whenever that rewrite is the reason PKHeX's own heuristic was fooled.
+                if (IsVC(enc)) c.EncryptionConstant = c.PID;
+            }
             if (lv > c.CurrentLevel) { c.CurrentLevel = (byte)lv; Call(c, "ResetPartyStats"); }
             ApplyPlusFlags(c, false);   // current PKHeX requires Plus/mastery flags for the moves it generates
             c.RefreshChecksum();
