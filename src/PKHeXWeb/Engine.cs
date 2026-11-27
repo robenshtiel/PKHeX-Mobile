@@ -1858,13 +1858,34 @@ public static partial class Engine
         catch { }
     }
 
-    static void FixNames(PKM c, bool speciesChanged, bool keepNickname = false)
+    // homeTransfer: true when this entry's encounter is a Virtual Console (Gen 1-7) or Pokémon GO origin being
+    // carried into a Gen 8+ format (i.e. IsVC(enc) || IsGo(enc) at the call site in Build()). Pass false (the
+    // default) for a native Gen8+ encounter, and for the generic post-hoc "language/nickname" Fixer, which has
+    // no encounter to check and shouldn't guess.
+    static void FixNames(PKM c, bool speciesChanged, bool keepNickname = false, bool homeTransfer = false)
     {
         if (c.Language < 1 || c.Language > 12) TrySet(c, ["Language"], 2);
         if (speciesChanged && c.IsEgg) c.IsEgg = false;
         if (keepNickname && c.IsNicknamed) return;   // in-game trades have a fixed nickname that survives evolution
         if (!speciesChanged && c.IsNicknamed) return;
         Call(c, "ClearNickname");
+
+        // Farfetch'd/Sirfetch'd: Pokémon HOME renders these two species' apostrophe as a straight ' instead of
+        // the slanted ' every other species (and every other context) uses, but only once the Pokémon has
+        // actually arrived in HOME-era format via a transfer from an earlier generation or from GO - confirmed
+        // against PKHeX.Core's own SpeciesName.GetSpeciesNameImportHOME, which is exactly what its real PK7->PK8
+        // HOME conversion (GameDataPK8.CopyFrom) and its GO->HOME encounter (EncounterSlot8GO) both call for
+        // this. ClearNickname() above doesn't know about that - it always returns the plain slanted-apostrophe
+        // name via SpeciesName.GetSpeciesNameGeneration, which is correct for a native Gen8+ encounter but wrong
+        // for a VC/GO transfer, where NicknameVerifier.IsNotNicknameValid specifically demands the straight one.
+        if (homeTransfer && c.Format >= 8 && c.Species is (int)Species.Farfetchd or (int)Species.Sirfetchd
+            && SpeciesName.IsApostropheFarfetchdLanguage(c.Language))
+        {
+            var fixedName = SpeciesName.GetSpeciesNameImportHOME(c.Species, c.Language, c.Format);
+            if (c.Nickname != fixedName) { c.IsNicknamed = false; c.Nickname = fixedName; }
+            return;
+        }
+
         var name = GameInfo.Strings.Species.ElementAtOrDefault(c.Species);
         if (name is not null && c.Language == 2 && c.Nickname != name) { c.IsNicknamed = false; c.Nickname = name; }
     }
@@ -2110,7 +2131,7 @@ public static partial class Engine
                 if (FormCountOf(species) <= 1 && SafeInt(Prop(c, "Form")) > 0) TrySet(c, ["Form"], 0);
                 if (!keepAbility) Call(c, "RefreshAbility", (int)Math.Log2(Math.Max(1, (int)c.AbilityNumber)));
             }
-            FixNames(c, changed, enc.GetType().Name.Contains("Trade"));
+            FixNames(c, changed, enc.GetType().Name.Contains("Trade"), IsVC(enc) || IsGo(enc));
             FixBallHGSS(c);
             if (shiny && !c.IsShiny)
             {
