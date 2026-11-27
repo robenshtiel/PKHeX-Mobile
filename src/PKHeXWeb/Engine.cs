@@ -1737,7 +1737,9 @@ public static partial class Engine
         return bad.Count > 0 && bad.All(l => l.Contains("tracker", StringComparison.OrdinalIgnoreCase));
     }
 
-    // GO PIDs follow their own rules, so a GO Pokémon that should be shiny has to be generated as shiny rather than edited afterwards.
+    // GO PIDs follow their own rules, and a Virtual Console (Gen3) encounter's PID is tied to it by an RNG
+    // correlation - both need to be generated as shiny up front rather than edited afterwards. See the comment at
+    // this function's call site in Build() for the Virtual Console half of that.
     static EncounterCriteria ShinyCriteria()
     {
         var u = EncounterCriteria.Unrestricted;
@@ -2057,7 +2059,15 @@ public static partial class Engine
         if (enc is not IEncounterConvertible conv) return (null, "Encounter can't be converted.");
         if (Sav!.Language < 1 || Sav.Language > 12) TrySet(Sav, ["Language"], 2);
         PKM pk;
-        try { pk = conv.ConvertToPKM(Sav!, shiny && IsGo(enc) ? ShinyCriteria() : EncounterCriteria.Unrestricted); }
+        // GO's PIDs follow their own rules, so a GO Pokémon that should be shiny has to be generated as shiny rather
+        // than edited afterwards - and the same turns out to be true of a Virtual Console (Gen3) static/wild
+        // encounter: its legitimate PID is tied to the encounter by a specific RNG correlation (the classic
+        // "Method 1"-style relationship checked by IsTypeCompatible/PIDIV verification), and that correlation
+        // survives the forward conversion to this save's format. Requesting shiny here lets ConvertToPKM pick a PID
+        // that is both shiny and still correlated the way the encounter needs; asking for it afterwards via
+        // SetShiny() (further down) instead overwrites the PID with an uncorrelated random one, which is what was
+        // failing legality with "PID+correlation does not match what was expected for the Encounter's type."
+        try { pk = conv.ConvertToPKM(Sav!, shiny && (IsGo(enc) || IsVC(enc)) ? ShinyCriteria() : EncounterCriteria.Unrestricted); }
         catch (Exception e) { return (null, e.Message); }
         if (pk.GetType() != Sav!.BlankPKM.GetType())
         {
