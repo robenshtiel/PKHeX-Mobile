@@ -2298,8 +2298,13 @@ public static partial class Engine
             {
                 for (int form = 0; form < forms && best is null; form++)
                 {
-                    var encs = Cap(FindEncountersAny(Template(species, form)!)
-                        .OrderBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0), 80);
+                    // Native/current-gen encounters are tried first; GO, Virtual Console and cross-game encounters
+                    // are only reached if the species has no native encounter at all. Only the top few are tried
+                    // (not the whole list) since each one is run through the legaliser, which is the slow part.
+                    var encs = FindEncountersAny(Template(species, form)!)
+                        .OrderBy(x => IsGo(x) || IsVC(x) || IsCrossGame(x) ? 1 : 0)
+                        .ThenBy(x => alphaGame && Prop(x, "IsAlpha") is true ? 1 : 0)
+                        .Take(3).ToList();
                     if (encs.Count == 0) continue;
                     if (shiny)
                         foreach (var enc in encs)
@@ -2391,7 +2396,7 @@ public static partial class Engine
                     var g3 = Gen3Template(species, form);
                     if (g3 is null) continue;
                     List<IEncounterable> encs;
-                    try { encs = Cap(FindEncounters(g3, FireRedLeafGreen), 80); } catch { continue; }
+                    try { encs = Cap(FindEncounters(g3, FireRedLeafGreen), 3); } catch { continue; }
                     if (encs.Count == 0) continue;
                     if (shiny)
                         foreach (var enc in encs)
