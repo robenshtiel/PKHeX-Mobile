@@ -1957,6 +1957,20 @@ public static partial class Engine
             }
             TrySet(pk, ["EggLocation", "Egg_Location"], 0);   // RejuvenateVC3 clears this too - it never came from an egg
 
+            // Deoxys @ Birth Island: Gen 3's PK3.Form is hardcoded to 0 for every species but Unown (Gen 3 never
+            // stores a Form byte - in the real games, Deoxys's appearance is purely which cartridge you're
+            // viewing it on, not data saved on the Pokémon itself), so PKHeX.Core's own FR/LG -> HOME converter
+            // (HomeConverter.UpgradeFromPastFormat, which this whole VC path relies on) just carries that
+            // always-0 value straight through, even though it already special-cases Deoxys for FatefulEncounter
+            // a few lines below that same spot. A real transfer locks in Attack Forme from FireRed or Defense
+            // Forme from LeafGreen - exactly what Encounters3FRLG bakes into the Birth Island encounter itself
+            // (Form = 1 for FR, Form = 2 for LG) - so reconstruct that the same way Version/MetLocation above do.
+            if (pk.Species == (int)Species.Deoxys && origVersion is not null)
+            {
+                bool isLgDeoxys = ((GameVersion)Convert.ToInt32(origVersion)) == GameVersion.LG;
+                TrySet(pk, ["Form"], isLgDeoxys ? 2 : 1);
+            }
+
             // Geolocation (Country/Region) is only ever recorded by the gen 5->6 Poké Transporter hop; a direct
             // VC->HOME arrival never passed through it.
             foreach (var n in new[] { "Geo1_Country", "Geo1_Region", "Geo2_Country", "Geo2_Region",
